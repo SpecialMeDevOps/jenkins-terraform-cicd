@@ -6,7 +6,7 @@ pipeline {
         TF_VERSION     = '1.9.8'
         TF_BIN_DIR     = "${WORKSPACE}/.tools"
         APP_DIR        = 'app'
-        DOCKER_IMAGE   = "yourdockerhub/nginx-demo:${BUILD_NUMBER}"
+        DOCKER_REPOSITORY = 'nginx-demo'
         PATH           = "${WORKSPACE}/.tools:${PATH}"
     }
 
@@ -101,14 +101,24 @@ pipeline {
         }
 
         stage('Approval') {
-            when { branch 'main' }
+            when {
+                anyOf {
+                    branch 'main'
+                    expression { env.GIT_BRANCH == 'origin/main' }
+                }
+            }
             steps {
                 input message: 'Deploy to PRODUCTION?', ok: 'Deploy'
             }
         }
 
         stage('Terraform Apply') {
-            when { branch 'main' }
+            when {
+                anyOf {
+                    branch 'main'
+                    expression { env.GIT_BRANCH == 'origin/main' }
+                }
+            }
             steps {
                 dir("${TF_WORKING_DIR}") {
                     withCredentials([
@@ -123,18 +133,62 @@ pipeline {
 
         stage('Build & Push Docker Image') {
             steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'dockerhub-creds',
+                        usernameVariable: 'DOCKERHUB_USERNAME',
+                        passwordVariable: 'DOCKERHUB_PASSWORD'
+                    )
+                ]) {
+                    sh '''
+                        set -eu
+
+                        if ! command -v docker >/dev/null 2>&1; then
+                            echo "Required tool 'docker' is missing from the Jenkins agent" >&2
+                            exit 1
+                        fi
+
+                        image="${DOCKERHUB_USERNAME}/${DOCKER_REPOSITORY}:${BUILD_NUMBER}"
+                        echo "${DOCKERHUB_PASSWORD}" | docker login --username "${DOCKERHUB_USERNAME}" --password-stdin
+                        docker build --tag "${image}" "${APP_DIR}"
+                        docker push "${image}"
+                        docker tag "${image}" "${DOCKERHUB_USERNAME}/${DOCKER_REPOSITORY}:latest"
+                        docker push "${DOCKERHUB_USERNAME}/${DOCKER_REPOSITORY}:latest"
+                        docker logout
+                    '''
+                }
+            }
+        }
+
+        stage('Set Deployment Image') {
+            when {
+                anyOf {
+                    branch 'main'
+                    expression { env.GIT_BRANCH == 'origin/main' }
+                }
+            }
+            steps {
                 script {
-                    docker.withRegistry('https://registry.hub.docker.com', 'dockerhub-creds') {
-                        def img = docker.build("${DOCKER_IMAGE}", "${APP_DIR}")
-                        img.push()
-                        img.push('latest')
+                    withCredentials([
+                        usernamePassword(
+                            credentialsId: 'dockerhub-creds',
+                            usernameVariable: 'DOCKERHUB_USERNAME',
+                            passwordVariable: 'DOCKERHUB_PASSWORD'
+                        )
+                    ]) {
+                        env.DOCKER_IMAGE = "${DOCKERHUB_USERNAME}/${DOCKER_REPOSITORY}:${BUILD_NUMBER}"
                     }
                 }
             }
         }
 
         stage('Deploy to Server') {
-            when { branch 'main' }
+            when {
+                anyOf {
+                    branch 'main'
+                    expression { env.GIT_BRANCH == 'origin/main' }
+                }
+            }
             steps {
                 script {
                     def tfOutput = sh(
@@ -159,6 +213,12 @@ pipeline {
         }
 
         stage('Smoke Test') {
+            when {
+                anyOf {
+                    branch 'main'
+                    expression { env.GIT_BRANCH == 'origin/main' }
+                }
+            }
             steps {
                 script {
                     def ip = sh(

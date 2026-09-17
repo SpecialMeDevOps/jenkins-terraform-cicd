@@ -12,6 +12,13 @@ Before running a production build, create an EC2 key pair named
 Jenkins `AWS_KEY_NAME` build parameter. The key pair must already exist;
 Terraform cannot create an EC2 key pair without importing its public key.
 
+The AWS key-pair ID (`key-078456c5751d09866`) is not an SSH credential. Add the
+private `.pem` file downloaded when `jenkins-project` was created to Jenkins as
+an **SSH Username with private key** credential with ID `prod-server-ssh` and
+username `ubuntu`. AWS does not allow the private key to be downloaded again;
+if the original `.pem` file is unavailable, create a new key pair and update
+`AWS_KEY_NAME` before deploying.
+
 Terraform state is kept in the Jenkins workspace because this installation
 does not have an S3 state bucket configured. Concurrent builds are disabled and
 the workspace is preserved so the next build can use the same state. The

@@ -390,14 +390,25 @@ pipeline {
 
                     echo "Deploying to ${tfOutput}"
 
-                    sshagent(credentials: ['prod-server-ssh']) {
+                    withCredentials([
+                        sshUserPrivateKey(
+                            credentialsId: 'prod-server-ssh',
+                            keyFileVariable: 'SSH_KEY_FILE',
+                            usernameVariable: 'SSH_USERNAME'
+                        )
+                    ]) {
                         sh """
-                            ssh -o StrictHostKeyChecking=no ubuntu@${tfOutput} '
-                                docker pull ${DOCKER_IMAGE}
-                                docker stop web || true
-                                docker rm web || true
-                                docker run -d --name web -p 80:80 ${DOCKER_IMAGE}
-                            '
+                            set -eu
+                            chmod 600 "\${SSH_KEY_FILE}"
+                            ssh -i "\${SSH_KEY_FILE}" \
+                                -o BatchMode=yes \
+                                -o StrictHostKeyChecking=no \
+                                "\${SSH_USERNAME}@${tfOutput}" '
+                                    docker pull ${env.DOCKER_IMAGE}
+                                    docker stop web || true
+                                    docker rm web || true
+                                    docker run -d --name web -p 80:80 ${env.DOCKER_IMAGE}
+                                '
                         """
                     }
                 }

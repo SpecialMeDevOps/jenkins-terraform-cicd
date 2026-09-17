@@ -12,9 +12,9 @@ Before running a production build, create an EC2 key pair named
 Jenkins `AWS_KEY_NAME` build parameter. The key pair must already exist;
 Terraform cannot create an EC2 key pair without importing its public key.
 
-The EC2 AMI is selected dynamically from the latest available official Ubuntu
-22.04 image in the configured AWS region, so the deployment is not tied to a
-region-specific AMI ID.
+The EC2 AMI is selected dynamically from the latest available official
+Canonical Ubuntu 22.04 x86_64 HVM image in the configured AWS region, so the
+deployment is not tied to a region-specific AMI ID.
 
 Terraform uses local state by default so a fresh Jenkins installation does not
 depend on a pre-created placeholder S3 bucket. For shared or production

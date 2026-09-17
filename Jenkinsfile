@@ -7,7 +7,7 @@ pipeline {
         TF_BIN_DIR     = "${WORKSPACE}/.tools"
         APP_DIR        = 'app'
         DOCKER_IMAGE   = "yourdockerhub/nginx-demo:${BUILD_NUMBER}"
-        PATH+TERRAFORM = "${WORKSPACE}/.tools"
+        PATH           = "${WORKSPACE}/.tools:${PATH}"
     }
 
     options {

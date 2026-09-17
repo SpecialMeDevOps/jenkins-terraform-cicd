@@ -27,14 +27,13 @@ imports only an existing security group named `prod-web-sg` into Terraform
 state. It does not scan or import unrelated security groups. The subsequent
 Terraform destroy then removes that imported project resource normally.
 
-Set the Jenkins `DOCKERHUB_NAMESPACE` parameter to the Docker Hub username
-that owns the `nginx-demo` repository, or leave it blank to derive the
-namespace from the credential username. Do not use the login email address;
+The pipeline pushes to `malikzohaib1482/workdocker-222`. Keep the Jenkins
+`DOCKERHUB_NAMESPACE` parameter set to `malikzohaib1482`. Do not use the login email address;
 Docker image namespaces cannot contain `@`.
 
 Configure `dockerhub-creds` as a username/password credential where the
 username is the Docker Hub username (or email) and the password is a Docker
-Hub access token with `Read & Write` permission for the `nginx-demo`
+Hub access token with `Read & Write` permission for the `workdocker-222`
 repository. The repository must exist under that namespace.
 
 The EC2 AMI is selected dynamically from the latest available official

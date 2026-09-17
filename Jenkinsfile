@@ -6,7 +6,7 @@ pipeline {
         TF_VERSION     = '1.16.3'
         TF_BIN_DIR     = "${WORKSPACE}/.tools"
         APP_DIR        = 'app'
-        DOCKER_REPOSITORY = 'nginx-demo'
+        DOCKER_REPOSITORY = 'workdocker-222'
         PATH           = "${WORKSPACE}/.tools:${PATH}"
     }
 
@@ -23,8 +23,8 @@ pipeline {
         )
         string(
             name: 'DOCKERHUB_NAMESPACE',
-            defaultValue: '',
-            description: 'Optional Docker Hub username/namespace; leave blank to derive it from the credential username'
+            defaultValue: 'malikzohaib1482',
+            description: 'Docker Hub username/namespace that owns workdocker-222'
         )
     }
 
@@ -328,7 +328,7 @@ pipeline {
                             exit 1
                         fi
 
-                        docker_namespace="${DOCKERHUB_NAMESPACE:-${DOCKERHUB_USERNAME%@*}}"
+                        docker_namespace="${DOCKERHUB_NAMESPACE:-malikzohaib1482}"
                         case "${docker_namespace}" in
                             ''|*[!a-z0-9_-]*)
                                 echo "Invalid Docker Hub namespace '${docker_namespace}'. Set DOCKERHUB_NAMESPACE to the Docker Hub username." >&2
@@ -366,7 +366,7 @@ pipeline {
                     ]) {
                         def dockerNamespace = params.DOCKERHUB_NAMESPACE?.trim()
                         if (!dockerNamespace) {
-                            dockerNamespace = env.DOCKERHUB_USERNAME?.split('@')[0]
+                            dockerNamespace = 'malikzohaib1482'
                         }
                         env.DOCKER_IMAGE = "${dockerNamespace}/${DOCKER_REPOSITORY}:${BUILD_NUMBER}"
                     }

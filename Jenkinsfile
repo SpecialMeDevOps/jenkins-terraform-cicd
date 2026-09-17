@@ -3,7 +3,7 @@ pipeline {
 
     environment {
         TF_WORKING_DIR = 'terraform'
-        TF_VERSION     = '1.9.8'
+        TF_VERSION     = '1.16.3'
         TF_BIN_DIR     = "${WORKSPACE}/.tools"
         APP_DIR        = 'app'
         DOCKER_REPOSITORY = 'nginx-demo'

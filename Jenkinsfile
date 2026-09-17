@@ -10,6 +10,14 @@ pipeline {
         PATH           = "${WORKSPACE}/.tools:${PATH}"
     }
 
+    parameters {
+        string(
+            name: 'AWS_KEY_NAME',
+            defaultValue: 'jenkins-project',
+            description: 'Existing EC2 key pair name in the selected AWS region'
+        )
+    }
+
     options {
         timestamps()
         timeout(time: 30, unit: 'MINUTES')
@@ -94,7 +102,7 @@ pipeline {
                     ]) {
                         sh 'terraform init'
                         sh 'terraform validate'
-                        sh 'terraform plan -var="key_name=my-keypair" -out=tfplan'
+                        sh 'terraform plan -var="key_name=${AWS_KEY_NAME}" -out=tfplan'
                     }
                 }
             }

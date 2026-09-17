@@ -1,3 +1,8 @@
+data "aws_key_pair" "deployment" {
+  key_name           = var.key_name
+  include_public_key = true
+}
+
 # Security Group
 resource "aws_security_group" "web_sg" {
   name        = "${var.environment}-web-sg"

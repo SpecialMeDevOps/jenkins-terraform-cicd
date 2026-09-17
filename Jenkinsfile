@@ -122,14 +122,16 @@ pipeline {
                     ]) {
                         sh '''
                             set -eu
-                            if [ -z "${TF_STATE_BUCKET}" ]; then
+                            state_bucket="${TF_STATE_BUCKET:-}"
+                            state_key="${TF_STATE_KEY:-jenkins-terraform-cicd/terraform.tfstate}"
+                            if [ -z "${state_bucket}" ]; then
                                 echo "TF_STATE_BUCKET must identify an existing S3 bucket for Terraform state" >&2
                                 exit 1
                             fi
                             echo "=== Terraform initialization ==="
                             terraform init -input=false -reconfigure \
-                                -backend-config="bucket=${TF_STATE_BUCKET}" \
-                                -backend-config="key=${TF_STATE_KEY}" \
+                                -backend-config="bucket=${state_bucket}" \
+                                -backend-config="key=${state_key}" \
                                 -backend-config="region=${AWS_REGION}" \
                                 -backend-config="use_lockfile=true"
                         '''

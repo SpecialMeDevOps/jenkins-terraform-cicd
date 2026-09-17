@@ -399,11 +399,31 @@ pipeline {
                     ]) {
                         sh """
                             set -eu
+                            case '${tfOutput}' in
+                                ''|*[!0-9.]*)
+                                    echo "Terraform returned an invalid instance IP: ${tfOutput}" >&2
+                                    exit 1
+                                    ;;
+                            esac
                             chmod 600 "\${SSH_KEY_FILE}"
-                            ssh -i "\${SSH_KEY_FILE}" \
+                            ssh -n -i "\${SSH_KEY_FILE}" \
                                 -o BatchMode=yes \
                                 -o StrictHostKeyChecking=no \
+                                -o ConnectTimeout=15 \
+                                -o ConnectionAttempts=3 \
+                                -o ServerAliveInterval=10 \
+                                -o ServerAliveCountMax=3 \
                                 "\${SSH_USERNAME}@${tfOutput}" '
+                                    for attempt in \$(seq 1 12); do
+                                        if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+                                            break
+                                        fi
+                                        if [ "\${attempt}" -eq 12 ]; then
+                                            echo "Docker is not ready on the server" >&2
+                                            exit 1
+                                        fi
+                                        sleep 5
+                                    done
                                     docker pull ${env.DOCKER_IMAGE}
                                     docker stop web || true
                                     docker rm web || true

@@ -121,6 +121,80 @@ pipeline {
             }
         }
 
+        stage('Reconcile Terraform State') {
+            when {
+                anyOf {
+                    branch 'main'
+                    expression { env.GIT_BRANCH == 'origin/main' }
+                }
+            }
+            steps {
+                dir("${TF_WORKING_DIR}") {
+                    withCredentials([
+                        string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+                        string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+                    ]) {
+                        sh '''
+                            set -eu
+
+                            if ! command -v aws >/dev/null 2>&1; then
+                                if ! command -v curl >/dev/null 2>&1; then
+                                    echo "AWS CLI and curl are required to reconcile existing Terraform resources" >&2
+                                    exit 1
+                                fi
+                                if ! command -v unzip >/dev/null 2>&1 && ! command -v python3 >/dev/null 2>&1 && ! command -v python >/dev/null 2>&1; then
+                                    echo "AWS CLI is missing and unzip or Python is required to bootstrap it" >&2
+                                    exit 1
+                                fi
+
+                                cli_tmp="$(mktemp -d)"
+                                trap 'rm -rf "${cli_tmp}"' EXIT
+                                curl --fail --silent --show-error --location --retry 3 \
+                                    --output "${cli_tmp}/awscliv2.zip" \
+                                    "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip"
+                                if command -v unzip >/dev/null 2>&1; then
+                                    unzip -oq "${cli_tmp}/awscliv2.zip" -d "${cli_tmp}"
+                                elif command -v python3 >/dev/null 2>&1; then
+                                    python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' \
+                                        "${cli_tmp}/awscliv2.zip" "${cli_tmp}"
+                                else
+                                    python -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' \
+                                        "${cli_tmp}/awscliv2.zip" "${cli_tmp}"
+                                fi
+                                "${cli_tmp}/aws/install" --install-dir "${WORKSPACE}/.tools/aws" \
+                                    --bin-dir "${WORKSPACE}/.tools" --update
+                            fi
+
+                            export AWS_DEFAULT_REGION="${AWS_REGION}"
+                            if ! terraform state list | grep -qx 'aws_security_group.web_sg'; then
+                                security_group_id="$(aws ec2 describe-security-groups \
+                                    --filters 'Name=group-name,Values=prod-web-sg' \
+                                    --query 'SecurityGroups[0].GroupId' \
+                                    --output text 2>/dev/null || true)"
+                                if [ -n "${security_group_id}" ] && [ "${security_group_id}" != "None" ]; then
+                                    echo "Importing existing project security group ${security_group_id} into Terraform state"
+                                    terraform import -no-color aws_security_group.web_sg "${security_group_id}"
+                                fi
+                            fi
+
+                            if ! terraform state list | grep -qx 'aws_instance.web'; then
+                                instance_id="$(aws ec2 describe-instances \
+                                    --filters \
+                                        'Name=tag:Name,Values=prod-web-server' \
+                                        'Name=instance-state-name,Values=pending,running,stopping,stopped' \
+                                    --query 'Reservations[0].Instances[0].InstanceId' \
+                                    --output text 2>/dev/null || true)"
+                                if [ -n "${instance_id}" ] && [ "${instance_id}" != "None" ]; then
+                                    echo "Importing existing project instance ${instance_id} into Terraform state"
+                                    terraform import -no-color aws_instance.web "${instance_id}"
+                                fi
+                            fi
+                        '''
+                    }
+                }
+            }
+        }
+
         stage('Terraform Destroy') {
             when {
                 anyOf {

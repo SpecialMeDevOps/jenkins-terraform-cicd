@@ -22,6 +22,11 @@ The security group has a stable name (`prod-web-sg`). Do not add build numbers
 to Terraform resource names, because changing names on every build creates
 duplicates instead of allowing Terraform to manage one predictable resource.
 
+Before destroy, the production pipeline bootstraps the AWS CLI when needed and
+imports only an existing security group named `prod-web-sg` into Terraform
+state. It does not scan or import unrelated security groups. The subsequent
+Terraform destroy then removes that imported project resource normally.
+
 Set the Jenkins `DOCKERHUB_NAMESPACE` parameter to the Docker Hub username
 that owns the `nginx-demo` repository, or leave it blank to derive the
 namespace from the credential username. Do not use the login email address;

@@ -107,35 +107,7 @@ pipeline {
                     ]) {
                         sh 'terraform init'
                         sh 'terraform validate'
-                        sh '''
-                            set -eu
-
-                            if ! command -v aws >/dev/null 2>&1; then
-                                echo "Required tool 'aws' is missing from the Jenkins agent" >&2
-                                exit 1
-                            fi
-
-                            export AWS_DEFAULT_REGION="${AWS_REGION}"
-
-                            security_group_id="$(aws ec2 describe-security-groups \
-                                --filters "Name=group-name,Values=prod-web-sg" \
-                                --query 'SecurityGroups[0].GroupId' \
-                                --output text)"
-                            if [ "${security_group_id}" != "None" ] && [ -n "${security_group_id}" ]; then
-                                terraform import -no-color aws_security_group.web_sg "${security_group_id}"
-                            fi
-
-                            instance_id="$(aws ec2 describe-instances \
-                                --filters \
-                                    "Name=tag:Name,Values=prod-web-server" \
-                                    "Name=instance-state-name,Values=pending,running,stopping,stopped" \
-                                --query 'Reservations[0].Instances[0].InstanceId' \
-                                --output text)"
-                            if [ "${instance_id}" != "None" ] && [ -n "${instance_id}" ]; then
-                                terraform import -no-color aws_instance.web "${instance_id}"
-                            fi
-                        '''
-                        sh 'terraform plan -var="aws_region=${AWS_REGION}" -var="key_name=${AWS_KEY_NAME}" -out=tfplan'
+                        sh 'terraform plan -var="aws_region=${AWS_REGION}" -var="key_name=${AWS_KEY_NAME}" -var="deployment_id=${BUILD_NUMBER}" -out=tfplan'
                     }
                 }
             }

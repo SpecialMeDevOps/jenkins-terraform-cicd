@@ -12,10 +12,9 @@ Before running a production build, create an EC2 key pair named
 Jenkins `AWS_KEY_NAME` build parameter. The key pair must already exist;
 Terraform cannot create an EC2 key pair without importing its public key.
 
-The Jenkins agent must also have the AWS CLI installed. Before planning,
-the pipeline imports an existing `prod-web-sg` security group or
-`prod-web-server` instance into the fresh workspace state when present. This
-prevents duplicate-resource failures after Jenkins cleans the workspace.
+The security group name includes the Jenkins build number, preventing duplicate
+name failures when Jenkins cleans the workspace and Terraform local state is
+recreated.
 
 The EC2 AMI is selected dynamically from the latest available official
 Canonical Ubuntu 22.04 x86_64 HVM image in the configured AWS region, so the

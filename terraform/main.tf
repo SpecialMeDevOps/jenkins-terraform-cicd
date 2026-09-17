@@ -30,7 +30,7 @@ data "aws_ami" "ubuntu" {
 
 # Security Group
 resource "aws_security_group" "web_sg" {
-  name        = "${var.environment}-web-sg"
+  name        = "${var.environment}-web-sg-${var.deployment_id}"
   description = "Allow HTTP and SSH"
 
   ingress {
@@ -55,7 +55,7 @@ resource "aws_security_group" "web_sg" {
   }
 
   tags = {
-    Name        = "${var.environment}-web-sg"
+    Name        = "${var.environment}-web-sg-${var.deployment_id}"
     Environment = var.environment
   }
 }

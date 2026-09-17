@@ -161,6 +161,7 @@ pipeline {
                                     python -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' \
                                         "${cli_tmp}/awscliv2.zip" "${cli_tmp}"
                                 fi
+                                chmod +x "${cli_tmp}/aws/install"
                                 "${cli_tmp}/aws/install" --install-dir "${WORKSPACE}/.tools/aws" \
                                     --bin-dir "${WORKSPACE}/.tools" --update
                             fi

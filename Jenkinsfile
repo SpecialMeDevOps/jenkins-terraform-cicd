@@ -3,8 +3,11 @@ pipeline {
 
     environment {
         TF_WORKING_DIR = 'terraform'
+        TF_VERSION     = '1.9.8'
+        TF_BIN_DIR     = "${WORKSPACE}/.tools"
         APP_DIR        = 'app'
         DOCKER_IMAGE   = "yourdockerhub/nginx-demo:${BUILD_NUMBER}"
+        PATH+TERRAFORM = "${WORKSPACE}/.tools"
     }
 
     options {
@@ -26,6 +29,50 @@ pipeline {
                 sh 'echo "=== Validating app ==="'
                 sh "test -f ${APP_DIR}/index.html"
                 sh "test -f ${APP_DIR}/Dockerfile"
+            }
+        }
+
+        stage('Install Terraform') {
+            steps {
+                sh '''
+                    set -eu
+
+                    if command -v terraform >/dev/null 2>&1; then
+                        terraform version
+                        exit 0
+                    fi
+
+                    for tool in curl unzip; do
+                        if ! command -v "${tool}" >/dev/null 2>&1; then
+                            echo "Required tool '${tool}' is missing from the Jenkins agent" >&2
+                            exit 1
+                        fi
+                    done
+
+                    os="$(uname -s)"
+                    arch="$(uname -m)"
+                    case "${os}:${arch}" in
+                        Linux:x86_64) artifact_os="linux"; artifact_arch="amd64" ;;
+                        Linux:aarch64) artifact_os="linux"; artifact_arch="arm64" ;;
+                        Darwin:x86_64) artifact_os="darwin"; artifact_arch="amd64" ;;
+                        Darwin:arm64) artifact_os="darwin"; artifact_arch="arm64" ;;
+                        *)
+                            echo "Unsupported agent platform: ${os}/${arch}" >&2
+                            exit 1
+                            ;;
+                    esac
+
+                    tmp_dir="$(mktemp -d)"
+                    trap 'rm -rf "${tmp_dir}"' EXIT
+                    mkdir -p "${TF_BIN_DIR}"
+                    curl --fail --silent --show-error --location --retry 3 \
+                        --output "${tmp_dir}/terraform.zip" \
+                        "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_${artifact_os}_${artifact_arch}.zip"
+                    unzip -oq "${tmp_dir}/terraform.zip" -d "${TF_BIN_DIR}"
+                    chmod +x "${TF_BIN_DIR}/terraform"
+                    test -x "${TF_BIN_DIR}/terraform"
+                    terraform version
+                '''
             }
         }
 

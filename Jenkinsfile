@@ -42,12 +42,10 @@ pipeline {
                         exit 0
                     fi
 
-                    for tool in curl unzip; do
-                        if ! command -v "${tool}" >/dev/null 2>&1; then
-                            echo "Required tool '${tool}' is missing from the Jenkins agent" >&2
-                            exit 1
-                        fi
-                    done
+                    if ! command -v curl >/dev/null 2>&1; then
+                        echo "Required tool 'curl' is missing from the Jenkins agent" >&2
+                        exit 1
+                    fi
 
                     os="$(uname -s)"
                     arch="$(uname -m)"
@@ -68,7 +66,18 @@ pipeline {
                     curl --fail --silent --show-error --location --retry 3 \
                         --output "${tmp_dir}/terraform.zip" \
                         "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_${artifact_os}_${artifact_arch}.zip"
-                    unzip -oq "${tmp_dir}/terraform.zip" -d "${TF_BIN_DIR}"
+                    if command -v unzip >/dev/null 2>&1; then
+                        unzip -oq "${tmp_dir}/terraform.zip" -d "${TF_BIN_DIR}"
+                    elif command -v python3 >/dev/null 2>&1; then
+                        python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' \
+                            "${tmp_dir}/terraform.zip" "${TF_BIN_DIR}"
+                    elif command -v python >/dev/null 2>&1; then
+                        python -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' \
+                            "${tmp_dir}/terraform.zip" "${TF_BIN_DIR}"
+                    else
+                        echo "Terraform archive extraction requires 'unzip', 'python3', or 'python'" >&2
+                        exit 1
+                    fi
                     chmod +x "${TF_BIN_DIR}/terraform"
                     test -x "${TF_BIN_DIR}/terraform"
                     terraform version

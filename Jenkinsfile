@@ -17,14 +17,24 @@ pipeline {
             description: 'AWS region for the deployment'
         )
         string(
+            name: 'TF_STATE_BUCKET',
+            defaultValue: '',
+            description: 'Existing S3 bucket for the shared Terraform state'
+        )
+        string(
+            name: 'TF_STATE_KEY',
+            defaultValue: 'jenkins-terraform-cicd/terraform.tfstate',
+            description: 'S3 object key for the Terraform state'
+        )
+        string(
             name: 'AWS_KEY_NAME',
             defaultValue: 'jenkins-project',
             description: 'Existing EC2 key pair name in the selected AWS region'
         )
         string(
             name: 'DOCKERHUB_NAMESPACE',
-            defaultValue: 'malikzohaibali863',
-            description: 'Docker Hub username/namespace, not the login email address'
+            defaultValue: '',
+            description: 'Optional Docker Hub username/namespace; leave blank to derive it from the credential username'
         )
     }
 
@@ -103,16 +113,106 @@ pipeline {
             }
         }
 
-        stage('Terraform Init & Plan') {
+        stage('Terraform Init') {
             steps {
                 dir("${TF_WORKING_DIR}") {
                     withCredentials([
                         string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
                         string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
                     ]) {
-                        sh 'terraform init'
+                        sh '''
+                            set -eu
+                            if [ -z "${TF_STATE_BUCKET}" ]; then
+                                echo "TF_STATE_BUCKET must identify an existing S3 bucket for Terraform state" >&2
+                                exit 1
+                            fi
+                            echo "=== Terraform initialization ==="
+                            terraform init -input=false -reconfigure \
+                                -backend-config="bucket=${TF_STATE_BUCKET}" \
+                                -backend-config="key=${TF_STATE_KEY}" \
+                                -backend-config="region=${AWS_REGION}" \
+                                -backend-config="use_lockfile=true"
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Terraform Destroy') {
+            when {
+                anyOf {
+                    branch 'main'
+                    expression { env.GIT_BRANCH == 'origin/main' }
+                }
+            }
+            steps {
+                dir("${TF_WORKING_DIR}") {
+                    withCredentials([
+                        string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+                        string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+                    ]) {
+                        sh '''
+                            set -eu
+                            echo "=== Terraform destroy started ==="
+                            terraform destroy -input=false -auto-approve -lock-timeout=5m \
+                                -var="aws_region=${AWS_REGION}" \
+                                -var="key_name=${AWS_KEY_NAME}"
+                            echo "=== Terraform destroy completed ==="
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Verify Destroy') {
+            when {
+                anyOf {
+                    branch 'main'
+                    expression { env.GIT_BRANCH == 'origin/main' }
+                }
+            }
+            steps {
+                dir("${TF_WORKING_DIR}") {
+                    withCredentials([
+                        string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+                        string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+                    ]) {
+                        sh '''
+                            set -eu
+                            remaining="$(terraform state list)"
+                            if [ -n "${remaining}" ]; then
+                                echo "Terraform state still contains managed resources after destroy:" >&2
+                                printf '%s\n' "${remaining}" >&2
+                                exit 1
+                            fi
+                            echo "=== Terraform destroy verification completed ==="
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Terraform Plan') {
+            when {
+                anyOf {
+                    branch 'main'
+                    expression { env.GIT_BRANCH == 'origin/main' }
+                }
+            }
+            steps {
+                dir("${TF_WORKING_DIR}") {
+                    withCredentials([
+                        string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+                        string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+                    ]) {
                         sh 'terraform validate'
-                        sh 'terraform plan -var="aws_region=${AWS_REGION}" -var="key_name=${AWS_KEY_NAME}" -var="deployment_id=${BUILD_NUMBER}" -out=tfplan'
+                        sh '''
+                            echo "=== Terraform plan ==="
+                            terraform plan -input=false -lock-timeout=5m \
+                                -var="aws_region=${AWS_REGION}" \
+                                -var="key_name=${AWS_KEY_NAME}" \
+                                -out=tfplan
+                        '''
                     }
                 }
             }
@@ -143,7 +243,11 @@ pipeline {
                         string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
                         string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
                     ]) {
-                        sh 'terraform apply -auto-approve tfplan'
+                        sh '''
+                            echo "=== Terraform apply started ==="
+                            terraform apply -input=false -auto-approve -lock-timeout=5m tfplan
+                            echo "=== Terraform apply completed ==="
+                        '''
                     }
                 }
             }
@@ -166,16 +270,16 @@ pipeline {
                             exit 1
                         fi
 
-                        docker_namespace="${DOCKERHUB_NAMESPACE:-malikzohaibali863}"
+                        docker_namespace="${DOCKERHUB_NAMESPACE:-${DOCKERHUB_USERNAME%@*}}"
                         case "${docker_namespace}" in
                             ''|*[!a-z0-9_-]*)
-                                echo "DOCKERHUB_NAMESPACE must contain only lowercase letters, numbers, underscores, or hyphens" >&2
+                                echo "Invalid Docker Hub namespace '${docker_namespace}'. Set DOCKERHUB_NAMESPACE to the Docker Hub username." >&2
                                 exit 1
                                 ;;
                         esac
 
                         image="${docker_namespace}/${DOCKER_REPOSITORY}:${BUILD_NUMBER}"
-                        echo "${DOCKERHUB_PASSWORD}" | docker login --username "${DOCKERHUB_USERNAME}" --password-stdin
+                        echo "${DOCKERHUB_PASSWORD}" | docker login docker.io --username "${DOCKERHUB_USERNAME}" --password-stdin
                         docker build --tag "${image}" "${APP_DIR}"
                         docker push "${image}"
                         docker tag "${image}" "${docker_namespace}/${DOCKER_REPOSITORY}:latest"
@@ -204,7 +308,7 @@ pipeline {
                     ]) {
                         def dockerNamespace = params.DOCKERHUB_NAMESPACE?.trim()
                         if (!dockerNamespace) {
-                            dockerNamespace = 'malikzohaibali863'
+                            dockerNamespace = env.DOCKERHUB_USERNAME?.split('@')[0]
                         }
                         env.DOCKER_IMAGE = "${dockerNamespace}/${DOCKER_REPOSITORY}:${BUILD_NUMBER}"
                     }

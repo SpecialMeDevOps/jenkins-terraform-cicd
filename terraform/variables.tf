@@ -14,8 +14,3 @@ variable "key_name" {
 variable "environment" {
   default = "prod"
 }
-
-variable "deployment_id" {
-  description = "Unique Jenkins build identifier used for resource names"
-  type        = string
-}

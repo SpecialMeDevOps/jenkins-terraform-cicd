@@ -16,6 +16,10 @@ The security group name includes the Jenkins build number, preventing duplicate
 name failures when Jenkins cleans the workspace and Terraform local state is
 recreated.
 
+Set the Jenkins `DOCKERHUB_NAMESPACE` parameter to the Docker Hub username
+that owns the `nginx-demo` repository. Do not use the login email address;
+Docker image namespaces cannot contain `@`.
+
 The EC2 AMI is selected dynamically from the latest available official
 Canonical Ubuntu 22.04 x86_64 HVM image in the configured AWS region, so the
 deployment is not tied to a region-specific AMI ID.

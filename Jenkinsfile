@@ -21,6 +21,11 @@ pipeline {
             defaultValue: 'jenkins-project',
             description: 'Existing EC2 key pair name in the selected AWS region'
         )
+        string(
+            name: 'DOCKERHUB_NAMESPACE',
+            defaultValue: 'malikzohaibali863',
+            description: 'Docker Hub username/namespace, not the login email address'
+        )
     }
 
     options {
@@ -161,12 +166,19 @@ pipeline {
                             exit 1
                         fi
 
-                        image="${DOCKERHUB_USERNAME}/${DOCKER_REPOSITORY}:${BUILD_NUMBER}"
+                        case "${DOCKERHUB_NAMESPACE}" in
+                            ''|*[!a-z0-9_-]*)
+                                echo "DOCKERHUB_NAMESPACE must contain only lowercase letters, numbers, underscores, or hyphens" >&2
+                                exit 1
+                                ;;
+                        esac
+
+                        image="${DOCKERHUB_NAMESPACE}/${DOCKER_REPOSITORY}:${BUILD_NUMBER}"
                         echo "${DOCKERHUB_PASSWORD}" | docker login --username "${DOCKERHUB_USERNAME}" --password-stdin
                         docker build --tag "${image}" "${APP_DIR}"
                         docker push "${image}"
-                        docker tag "${image}" "${DOCKERHUB_USERNAME}/${DOCKER_REPOSITORY}:latest"
-                        docker push "${DOCKERHUB_USERNAME}/${DOCKER_REPOSITORY}:latest"
+                        docker tag "${image}" "${DOCKERHUB_NAMESPACE}/${DOCKER_REPOSITORY}:latest"
+                        docker push "${DOCKERHUB_NAMESPACE}/${DOCKER_REPOSITORY}:latest"
                         docker logout
                     '''
                 }
@@ -189,7 +201,7 @@ pipeline {
                             passwordVariable: 'DOCKERHUB_PASSWORD'
                         )
                     ]) {
-                        env.DOCKER_IMAGE = "${DOCKERHUB_USERNAME}/${DOCKER_REPOSITORY}:${BUILD_NUMBER}"
+                        env.DOCKER_IMAGE = "${DOCKERHUB_NAMESPACE}/${DOCKER_REPOSITORY}:${BUILD_NUMBER}"
                     }
                 }
             }

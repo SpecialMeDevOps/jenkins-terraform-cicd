@@ -12,12 +12,11 @@ Before running a production build, create an EC2 key pair named
 Jenkins `AWS_KEY_NAME` build parameter. The key pair must already exist;
 Terraform cannot create an EC2 key pair without importing its public key.
 
-Terraform state is stored in an existing S3 bucket configured through the
-Jenkins `TF_STATE_BUCKET` and `TF_STATE_KEY` parameters, with S3-native state
-locking enabled. The pipeline destroys
-only resources recorded in that Terraform state, verifies that the state is
-empty, and then plans and applies the fresh infrastructure. The S3 bucket must
-be created and protected separately; it is not destroyed by this pipeline.
+Terraform state is kept in the Jenkins workspace because this installation
+does not have an S3 state bucket configured. Concurrent builds are disabled and
+the workspace is preserved so the next build can use the same state. The
+pipeline destroys only resources recorded in that Terraform state, verifies
+that the state is empty, and then plans and applies the fresh infrastructure.
 
 The security group has a stable name (`prod-web-sg`). Do not add build numbers
 to Terraform resource names, because changing names on every build creates
@@ -37,7 +36,8 @@ The EC2 AMI is selected dynamically from the latest available official
 Canonical Ubuntu 22.04 x86_64 HVM image in the configured AWS region, so the
 deployment is not tied to a region-specific AMI ID.
 
-This project requires the shared S3 backend above for Jenkins runs. If
-resources were created by an older local-state build, migrate or import only
-those known project resources into the remote state once before enabling
-destroy-before-apply.
+For multiple Jenkins agents or high-availability production use, configure a
+real shared S3 backend later. Resources created by older local-state builds
+must be imported into this workspace state once, or removed through a reviewed
+one-time migration; the pipeline never scans or deletes unrelated AWS
+resources.

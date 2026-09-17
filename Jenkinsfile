@@ -17,16 +17,6 @@ pipeline {
             description: 'AWS region for the deployment'
         )
         string(
-            name: 'TF_STATE_BUCKET',
-            defaultValue: '',
-            description: 'Existing S3 bucket for the shared Terraform state'
-        )
-        string(
-            name: 'TF_STATE_KEY',
-            defaultValue: 'jenkins-terraform-cicd/terraform.tfstate',
-            description: 'S3 object key for the Terraform state'
-        )
-        string(
             name: 'AWS_KEY_NAME',
             defaultValue: 'jenkins-project',
             description: 'Existing EC2 key pair name in the selected AWS region'
@@ -42,6 +32,7 @@ pipeline {
         timestamps()
         timeout(time: 30, unit: 'MINUTES')
         buildDiscarder(logRotator(numToKeepStr: '10'))
+        disableConcurrentBuilds()
     }
 
     stages {
@@ -122,18 +113,8 @@ pipeline {
                     ]) {
                         sh '''
                             set -eu
-                            state_bucket="${TF_STATE_BUCKET:-}"
-                            state_key="${TF_STATE_KEY:-jenkins-terraform-cicd/terraform.tfstate}"
-                            if [ -z "${state_bucket}" ]; then
-                                echo "TF_STATE_BUCKET must identify an existing S3 bucket for Terraform state" >&2
-                                exit 1
-                            fi
                             echo "=== Terraform initialization ==="
-                            terraform init -input=false -reconfigure \
-                                -backend-config="bucket=${state_bucket}" \
-                                -backend-config="key=${state_key}" \
-                                -backend-config="region=${AWS_REGION}" \
-                                -backend-config="use_lockfile=true"
+                            terraform init -input=false -reconfigure
                         '''
                     }
                 }
@@ -375,7 +356,7 @@ pipeline {
             echo 'no no this is error Pipeline failed!'
         }
         always {
-            cleanWs()
+            echo 'Workspace preserved so local Terraform state remains available for the next build.'
         }
     }
 }

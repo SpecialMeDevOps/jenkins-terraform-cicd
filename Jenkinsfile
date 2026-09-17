@@ -166,19 +166,20 @@ pipeline {
                             exit 1
                         fi
 
-                        case "${DOCKERHUB_NAMESPACE}" in
+                        docker_namespace="${DOCKERHUB_NAMESPACE:-malikzohaibali863}"
+                        case "${docker_namespace}" in
                             ''|*[!a-z0-9_-]*)
                                 echo "DOCKERHUB_NAMESPACE must contain only lowercase letters, numbers, underscores, or hyphens" >&2
                                 exit 1
                                 ;;
                         esac
 
-                        image="${DOCKERHUB_NAMESPACE}/${DOCKER_REPOSITORY}:${BUILD_NUMBER}"
+                        image="${docker_namespace}/${DOCKER_REPOSITORY}:${BUILD_NUMBER}"
                         echo "${DOCKERHUB_PASSWORD}" | docker login --username "${DOCKERHUB_USERNAME}" --password-stdin
                         docker build --tag "${image}" "${APP_DIR}"
                         docker push "${image}"
-                        docker tag "${image}" "${DOCKERHUB_NAMESPACE}/${DOCKER_REPOSITORY}:latest"
-                        docker push "${DOCKERHUB_NAMESPACE}/${DOCKER_REPOSITORY}:latest"
+                        docker tag "${image}" "${docker_namespace}/${DOCKER_REPOSITORY}:latest"
+                        docker push "${docker_namespace}/${DOCKER_REPOSITORY}:latest"
                         docker logout
                     '''
                 }
@@ -201,7 +202,11 @@ pipeline {
                             passwordVariable: 'DOCKERHUB_PASSWORD'
                         )
                     ]) {
-                        env.DOCKER_IMAGE = "${DOCKERHUB_NAMESPACE}/${DOCKER_REPOSITORY}:${BUILD_NUMBER}"
+                        def dockerNamespace = params.DOCKERHUB_NAMESPACE?.trim()
+                        if (!dockerNamespace) {
+                            dockerNamespace = 'malikzohaibali863'
+                        }
+                        env.DOCKER_IMAGE = "${dockerNamespace}/${DOCKER_REPOSITORY}:${BUILD_NUMBER}"
                     }
                 }
             }

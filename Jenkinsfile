@@ -538,6 +538,14 @@ pipeline {
                         aws_cli="${WORKSPACE}/.tools/aws/v2/current/bin/aws"
                         if command -v aws >/dev/null 2>&1; then aws_cli="$(command -v aws)"; fi
                         test -x "${aws_cli}"
+                        if command -v python3 >/dev/null 2>&1; then
+                            python_bin=python3
+                        elif command -v python >/dev/null 2>&1; then
+                            python_bin=python
+                        else
+                            echo "Python is required to create the SSM command payload" >&2
+                            exit 1
+                        fi
                         export AWS_DEFAULT_REGION="${AWS_REGION}"
                         echo "=== Deploying Docker application through SSM ==="
                         command_file="$(mktemp)"

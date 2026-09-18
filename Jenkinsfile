@@ -26,6 +26,11 @@ pipeline {
             defaultValue: 'malikzohaib1482',
             description: 'Docker Hub username/namespace that owns workdocker-222'
         )
+        string(
+            name: 'SSH_CREDENTIAL_ID',
+            defaultValue: 'prod-server-ssh',
+            description: 'Jenkins SSH Username with private key credential ID for the EC2 server'
+        )
     }
 
     options {
@@ -421,12 +426,16 @@ pipeline {
                         script: "cd ${TF_WORKING_DIR} && terraform output -raw instance_public_ip",
                         returnStdout: true
                     ).trim()
+                    def sshCredentialId = params.SSH_CREDENTIAL_ID?.trim()
+                    if (!sshCredentialId) {
+                        error('SSH_CREDENTIAL_ID is required. Create an SSH Username with private key credential in Jenkins.')
+                    }
 
                     echo "Deploying to ${tfOutput}"
 
                     withCredentials([
                         sshUserPrivateKey(
-                            credentialsId: 'prod-server-ssh',
+                            credentialsId: sshCredentialId,
                             keyFileVariable: 'SSH_KEY_FILE',
                             usernameVariable: 'SSH_USERNAME'
                         )

@@ -18,8 +18,9 @@ Terraform cannot create an EC2 key pair without importing its public key.
 
 The AWS key-pair ID (`key-078456c5751d09866`) is not an SSH credential. Add the
 private `.pem` file downloaded when `jenkins-project` was created to Jenkins as
-an **SSH Username with private key** credential with ID `prod-server-ssh` and
-username `ubuntu`. AWS does not allow the private key to be downloaded again;
+an **SSH Username with private key** credential. The default Jenkins credential
+ID is `prod-server-ssh`; if you use another ID, set the `SSH_CREDENTIAL_ID`
+build parameter to that ID. Use username `ubuntu`. AWS does not allow the private key to be downloaded again;
 if the original `.pem` file is unavailable, create a new key pair and update
 `AWS_KEY_NAME` before deploying.
 

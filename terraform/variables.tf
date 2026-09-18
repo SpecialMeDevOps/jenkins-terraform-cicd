@@ -9,3 +9,9 @@ variable "instance_type" {
 variable "environment" {
   default = "prod"
 }
+
+variable "deployment_image" {
+  description = "Docker image deployed by EC2 user data"
+  type        = string
+  default     = "malikzohaib1482/workdocker-222:latest"
+}

@@ -1,9 +1,8 @@
-# Jenkins + Terraform + AWS SSM deployment
+# Jenkins + Terraform + AWS Docker deployment
 
 This project provisions an Ubuntu EC2 web server with Terraform, builds and
-pushes the Docker image to Docker Hub, and deploys it through AWS Systems
-Manager (SSM). The pipeline does not use SSH, port 22, a `.pem` file, or an
-SSH credential.
+pushes the Docker image to Docker Hub, and deploys it from EC2 cloud-init.
+There is no SSH, port 22, `.pem` file, SSM agent, or SSH credential.
 
 ## Required Jenkins credentials
 
@@ -15,74 +14,74 @@ these IDs:
 - `dockerhub-creds`: Docker Hub username and a read/write access token
 
 For production, prefer assigning the Jenkins agent an AWS IAM instance profile
-or configuring Jenkins OIDC/web-identity federation. In that case, remove the
-two AWS `withCredentials` bindings from the Jenkinsfile and let the AWS CLI and
-Terraform use the agent role. Never put AWS keys in the Jenkinsfile, Terraform
-files, Git, or build parameters.
+or configuring OIDC/web-identity federation. In that case, remove the AWS
+`withCredentials` bindings from the Jenkinsfile and let Terraform/AWS CLI use
+the agent role. Never put AWS keys in the Jenkinsfile, Terraform files, Git, or
+build parameters.
 
 ## AWS permissions
 
 The Jenkins AWS identity needs the Terraform permissions for the resources in
-this project, plus these SSM deployment permissions:
+this project, including EC2 and security-group read/create/update/delete
+permissions. It also needs the IAM permissions required to create and destroy
+the Terraform-managed resources. Use a least-privilege policy scoped to the
+project resources in production.
 
-- `ssm:DescribeInstanceInformation`
-- `ssm:SendCommand`
-- `ssm:GetCommandInvocation`
-- `ec2:DescribeInstances`
-- `ec2:DescribeSecurityGroups`
-- `iam:GetRole`
-- `iam:GetInstanceProfile`
-- `iam:ListAttachedRolePolicies`
+The EC2 instance does not need an IAM role because deployment is performed by
+its startup script and the Docker image is public.
 
-The Terraform identity also needs to create and destroy the EC2, security
-group, IAM role, IAM policy attachment, and IAM instance profile resources.
-Use a least-privilege policy scoped to the project resources in production.
+## Terraform and deployment
 
-## Terraform and networking
-
-The EC2 instance receives the AWS-managed
-`AmazonSSMManagedInstanceCore` policy through an IAM role and instance profile.
-Cloud-init installs Docker, installs the Ubuntu SSM Agent through snap, enables
-both services, and waits for the agent to start.
-
-The security group allows HTTP on port 80 and unrestricted outbound traffic so
-the instance can reach the regional SSM endpoints through its existing public
-network path. Port 22 is not opened. For a private-subnet production design,
-replace the public path with VPC interface endpoints for `ssm`, `ssmmessages`,
-and `ec2messages`, plus the required private subnet routing and endpoint
-security group.
+The EC2 security group allows HTTP on port 80 and unrestricted outbound
+traffic. Port 22 is not opened. Cloud-init installs Docker, waits for the
+Docker daemon, pulls the image passed through Terraform, replaces the `web`
+container, and verifies that it is running. Bootstrap output is written to
+`/var/log/jenkins-terraform-bootstrap.log` and
+`/var/log/cloud-init-output.log`.
 
 Terraform outputs `instance_id`, `instance_public_ip`, and `application_url`.
-The Jenkins pipeline always obtains the current instance ID from
-`terraform output -raw instance_id`, so an EC2 replacement does not leave a
-stale IP or SSH key reference.
+`user_data_replace_on_change` ensures that changing the image tag causes the
+instance to be replaced and the new image to be deployed. The pipeline always
+builds and pushes the image before `terraform plan`, then passes the exact
+build image as `deployment_image`.
+
+The Docker Hub repository must be publicly readable. If it is private, Docker
+Hub credentials must be provided to cloud-init through a separate secret
+mechanism; do not put them in Terraform state or user data.
 
 ## Pipeline flow
 
 ```text
 GitHub Push
   -> Checkout and validation
+  -> Build and push Docker image
   -> Terraform init
   -> Reconcile known project resources
   -> Terraform destroy and verification
-  -> Terraform plan and approval
+  -> Terraform plan with deployment_image
+  -> Approval
   -> Terraform apply
-  -> Get current EC2 instance ID
-  -> Wait for EC2 and SSM Online
-  -> Send Docker deployment through SSM
-  -> Verify SSM target
-  -> Smoke test the application URL
+  -> EC2 cloud-init installs Docker and starts the image
+  -> HTTP smoke test
 ```
 
-The SSM command verifies Docker, pulls
-`malikzohaib1482/workdocker-222:<build-number>`, replaces the `web` container,
-and verifies that the new container is running. Failed SSM commands fail the
-Jenkins build.
+Terraform destroys and recreates the project instance on each deployment. The
+new instance receives the current image from Terraform, so no old IP address,
+instance ID, SSH key, or SSM registration is reused.
 
 ## Jenkins parameters
 
 - `AWS_REGION`: AWS region, default `ap-south-1`
 - `DOCKERHUB_NAMESPACE`: default `malikzohaib1482`
 
-There is no AWS key-pair parameter and no SSH credential parameter. Terraform
-does not store a private SSH key or require one to create the instance.
+## Manual setup
+
+1. Create the three Jenkins credentials listed above, or configure an AWS IAM
+   role/OIDC for the Jenkins agent.
+2. Ensure Docker is installed and usable by the Jenkins agent.
+3. Ensure the Docker Hub repository is public and the Docker credential can
+   push to it.
+4. Push to the repository and approve the production input when prompted.
+
+After approval, the Jenkins build waits for Terraform apply and then tests the
+current `application_url`. No SSH or SSM action is required.

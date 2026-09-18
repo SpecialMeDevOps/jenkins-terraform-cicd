@@ -23,20 +23,9 @@ data "aws_ami" "ubuntu" {
   }
 }
 
-data "aws_vpc" "default" {
-  default = true
-}
-
-data "aws_subnets" "default_vpc" {
-  filter {
-    name   = "vpc-id"
-    values = [data.aws_vpc.default.id]
-  }
-}
-
 resource "aws_security_group" "web_sg" {
   name        = "${var.environment}-web-sg"
-  description = "Allow HTTP; administration uses AWS Systems Manager"
+  description = "Allow public HTTP for the Docker web application"
 
   ingress {
     from_port   = 80
@@ -58,90 +47,11 @@ resource "aws_security_group" "web_sg" {
   }
 }
 
-resource "aws_security_group" "ssm_endpoints" {
-  name        = "${var.environment}-ssm-endpoints"
-  description = "Allow EC2 instances to reach AWS Systems Manager endpoints"
-  vpc_id      = data.aws_vpc.default.id
-
-  ingress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = [data.aws_vpc.default.cidr_block]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-
-resource "aws_vpc_endpoint" "ssm" {
-  vpc_id              = data.aws_vpc.default.id
-  service_name        = "com.amazonaws.${var.aws_region}.ssm"
-  vpc_endpoint_type   = "Interface"
-  subnet_ids          = data.aws_subnets.default_vpc.ids
-  security_group_ids  = [aws_security_group.ssm_endpoints.id]
-  private_dns_enabled = true
-}
-
-resource "aws_vpc_endpoint" "ssmmessages" {
-  vpc_id              = data.aws_vpc.default.id
-  service_name        = "com.amazonaws.${var.aws_region}.ssmmessages"
-  vpc_endpoint_type   = "Interface"
-  subnet_ids          = data.aws_subnets.default_vpc.ids
-  security_group_ids  = [aws_security_group.ssm_endpoints.id]
-  private_dns_enabled = true
-}
-
-resource "aws_vpc_endpoint" "ec2messages" {
-  vpc_id              = data.aws_vpc.default.id
-  service_name        = "com.amazonaws.${var.aws_region}.ec2messages"
-  vpc_endpoint_type   = "Interface"
-  subnet_ids          = data.aws_subnets.default_vpc.ids
-  security_group_ids  = [aws_security_group.ssm_endpoints.id]
-  private_dns_enabled = true
-}
-
-resource "aws_iam_role" "web_ssm" {
-  name = "${var.environment}-web-ssm-role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Principal = {
-        Service = "ec2.amazonaws.com"
-      }
-      Action = "sts:AssumeRole"
-    }]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "web_ssm" {
-  role       = aws_iam_role.web_ssm.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-}
-
-resource "aws_iam_instance_profile" "web" {
-  name = "${var.environment}-web-instance-profile"
-  role = aws_iam_role.web_ssm.name
-}
-
 resource "aws_instance" "web" {
   ami                         = data.aws_ami.ubuntu.id
   instance_type               = var.instance_type
-  iam_instance_profile        = aws_iam_instance_profile.web.name
   vpc_security_group_ids      = [aws_security_group.web_sg.id]
   associate_public_ip_address = true
-  depends_on = [
-    aws_iam_role_policy_attachment.web_ssm,
-    aws_vpc_endpoint.ssm,
-    aws_vpc_endpoint.ssmmessages,
-    aws_vpc_endpoint.ec2messages
-  ]
   user_data_replace_on_change = true
 
   user_data = <<-EOF
@@ -152,22 +62,19 @@ resource "aws_instance" "web" {
               apt-get update -y
               apt-get install -y docker.io curl
               systemctl enable --now docker
-              curl --fail --silent --show-error --location --retry 8 \
-                --output /tmp/amazon-ssm-agent.deb \
-                "https://s3.${var.aws_region}.amazonaws.com/amazon-ssm-${var.aws_region}/latest/debian_amd64/amazon-ssm-agent.deb"
-              dpkg -i /tmp/amazon-ssm-agent.deb
-              systemctl daemon-reload
-              systemctl enable amazon-ssm-agent
-              systemctl restart amazon-ssm-agent
               for attempt in $(seq 1 12); do
-                if systemctl is-active --quiet amazon-ssm-agent; then
-                  break
+                if docker info >/dev/null 2>&1; then break; fi
+                if [ "$${attempt}" -eq 12 ]; then
+                  echo "Docker did not become ready" >&2
+                  exit 1
                 fi
-                systemctl restart amazon-ssm-agent || true
                 sleep 5
               done
-              systemctl is-active --quiet amazon-ssm-agent
-              systemctl is-active --quiet docker
+              docker pull ${var.deployment_image}
+              docker stop web 2>/dev/null || true
+              docker rm web 2>/dev/null || true
+              docker run -d --name web -p 80:80 ${var.deployment_image}
+              docker ps --filter name=^/web$ --filter status=running --format '{{.Names}}' | grep -qx web
               EOF
 
   tags = {

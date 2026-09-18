@@ -401,11 +401,11 @@ pipeline {
                     ).trim()
                     sh """
                         set -eu
-                        for attempt in \$(seq 1 12); do
+                        for attempt in \$(seq 1 18); do
                             if curl --fail --silent --show-error --connect-timeout 5 http://${ip}; then
                                 exit 0
                             fi
-                            echo "Waiting for application HTTP endpoint (attempt \${attempt}/12)"
+                            echo "Waiting for application HTTP endpoint (attempt \${attempt}/18)"
                             sleep 5
                         done
                         echo "Application smoke test failed" >&2

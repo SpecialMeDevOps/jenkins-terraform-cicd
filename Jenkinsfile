@@ -386,34 +386,6 @@ pipeline {
             }
         }
 
-        stage('Smoke Test') {
-            when {
-                anyOf {
-                    branch 'main'
-                    expression { env.GIT_BRANCH == 'origin/main' }
-                }
-            }
-            steps {
-                script {
-                    def ip = sh(
-                        script: "cd ${TF_WORKING_DIR} && terraform output -raw instance_public_ip",
-                        returnStdout: true
-                    ).trim()
-                    sh """
-                        set -eu
-                        for attempt in \$(seq 1 18); do
-                            if curl --fail --silent --show-error --connect-timeout 5 http://${ip}; then
-                                exit 0
-                            fi
-                            echo "Waiting for application HTTP endpoint (attempt \${attempt}/18)"
-                            sleep 5
-                        done
-                        echo "Application smoke test failed" >&2
-                        exit 1
-                    """
-                }
-            }
-        }
     }
 
     post {

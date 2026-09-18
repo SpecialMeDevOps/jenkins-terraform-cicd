@@ -137,7 +137,10 @@ pipeline {
                         sh '''
                             set -eu
 
-                            if ! command -v aws >/dev/null 2>&1; then
+                            aws_cli="${WORKSPACE}/.tools/aws/v2/current/bin/aws"
+                            if command -v aws >/dev/null 2>&1; then
+                                aws_cli="$(command -v aws)"
+                            elif [ ! -x "${aws_cli}" ]; then
                                 if ! command -v curl >/dev/null 2>&1; then
                                     echo "AWS CLI and curl are required to reconcile existing Terraform resources" >&2
                                     exit 1
@@ -164,18 +167,18 @@ pipeline {
                                 chmod +x "${cli_tmp}/aws/install"
                                 "${cli_tmp}/aws/install" --install-dir "${WORKSPACE}/.tools/aws" \
                                     --bin-dir "${WORKSPACE}/.tools" --update
-                                chmod +x "${WORKSPACE}/.tools/aws"
                             fi
 
-                            if ! command -v aws >/dev/null 2>&1; then
-                                echo "AWS CLI installation did not provide an executable aws command" >&2
+                            if [ ! -x "${aws_cli}" ]; then
+                                echo "AWS CLI installation did not provide an executable at ${aws_cli}" >&2
                                 exit 1
                             fi
-                            chmod +x "$(command -v aws)"
+                            chmod +x "${aws_cli}"
+                            "${aws_cli}" --version
                             export AWS_DEFAULT_REGION="${AWS_REGION}"
                             state_resources="$(terraform state list 2>/dev/null || true)"
                             if ! printf '%s\n' "${state_resources}" | grep -qx 'aws_security_group.web_sg'; then
-                                security_group_id="$(aws ec2 describe-security-groups \
+                                security_group_id="$("${aws_cli}" ec2 describe-security-groups \
                                     --filters 'Name=group-name,Values=prod-web-sg' \
                                     --query 'SecurityGroups[0].GroupId' \
                                     --output text)"
@@ -188,7 +191,7 @@ pipeline {
 
                             state_resources="$(terraform state list 2>/dev/null || true)"
                             if ! printf '%s\n' "${state_resources}" | grep -qx 'aws_instance.web'; then
-                                instance_id="$(aws ec2 describe-instances \
+                                instance_id="$("${aws_cli}" ec2 describe-instances \
                                     --filters \
                                         'Name=tag:Name,Values=prod-web-server' \
                                         'Name=instance-state-name,Values=pending,running,stopping,stopped' \
@@ -252,6 +255,13 @@ pipeline {
                     ]) {
                         sh '''
                             set -eu
+                            aws_cli="${WORKSPACE}/.tools/aws/v2/current/bin/aws"
+                            if command -v aws >/dev/null 2>&1; then
+                                aws_cli="$(command -v aws)"
+                            elif [ ! -x "${aws_cli}" ]; then
+                                echo "AWS CLI executable is unavailable for destroy verification" >&2
+                                exit 1
+                            fi
                             export AWS_DEFAULT_REGION="${AWS_REGION}"
                             remaining="$(terraform state list 2>/dev/null || true)"
                             if [ -n "${remaining}" ]; then
@@ -259,7 +269,7 @@ pipeline {
                                 printf '%s\n' "${remaining}" >&2
                                 exit 1
                             fi
-                            security_group_id="$(aws ec2 describe-security-groups \
+                            security_group_id="$("${aws_cli}" ec2 describe-security-groups \
                                 --filters 'Name=group-name,Values=prod-web-sg' \
                                 --query 'SecurityGroups[0].GroupId' \
                                 --output text)"

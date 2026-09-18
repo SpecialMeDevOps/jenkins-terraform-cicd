@@ -11,8 +11,9 @@ agent does not already provide Terraform. The agent must have outbound HTTPS acc
 provide `curl` plus either `unzip` or Python.
 
 Before running a production build, create an EC2 key pair named
-`jenkins-project` in AWS `us-east-1`, or enter an existing key pair name in the
-Jenkins `AWS_KEY_NAME` build parameter. The key pair must already exist;
+`jenkins-project` in the AWS region selected by the Jenkins `AWS_REGION` build
+parameter, or enter an existing key pair name in that parameter. The key pair
+must already exist;
 Terraform cannot create an EC2 key pair without importing its public key.
 
 The AWS key-pair ID (`key-078456c5751d09866`) is not an SSH credential. Add the
@@ -33,9 +34,10 @@ to Terraform resource names, because changing names on every build creates
 duplicates instead of allowing Terraform to manage one predictable resource.
 
 Before destroy, the production pipeline bootstraps the AWS CLI when needed and
-imports only an existing security group named `prod-web-sg` into Terraform
-state. It does not scan or import unrelated security groups. The subsequent
-Terraform destroy then removes that imported project resource normally.
+imports only the existing project security group named `prod-web-sg` and the
+project instance tagged `prod-web-server` into Terraform state. It does not
+scan or import unrelated resources. The subsequent Terraform destroy then
+removes those imported project resources normally.
 
 The pipeline pushes to `malikzohaib1482/workdocker-222`. Keep the Jenkins
 `DOCKERHUB_NAMESPACE` parameter set to `malikzohaib1482`. Do not use the login email address;

@@ -494,7 +494,7 @@ pipeline {
                         fi
                         export AWS_DEFAULT_REGION="${AWS_REGION}"
                         echo "=== Waiting for EC2 and SSM readiness ==="
-                        for attempt in $(seq 1 60); do
+                        for attempt in $(seq 1 18); do
                             instance_state="$("${aws_cli}" ec2 describe-instances \
                                 --instance-ids "${EC2_INSTANCE_ID}" \
                                 --query 'Reservations[0].Instances[0].State.Name' \
@@ -507,10 +507,15 @@ pipeline {
                                 echo "EC2 ${EC2_INSTANCE_ID} is running and online in SSM"
                                 exit 0
                             fi
-                            echo "Waiting for EC2/SSM (attempt ${attempt}/60; state=${instance_state}; ssm=${ssm_status})"
+                            echo "Waiting for EC2/SSM (attempt ${attempt}/18; state=${instance_state}; ssm=${ssm_status})"
                             sleep 10
                         done
-                        echo "EC2 instance did not become available through SSM. Check /var/log/jenkins-terraform-bootstrap.log and the SSM IAM/network configuration on ${EC2_INSTANCE_ID}." >&2
+                        echo "EC2 instance did not register with SSM after 3 minutes." >&2
+                        echo "Verify the instance profile contains AmazonSSMManagedInstanceCore and that the subnet has HTTPS egress to SSM endpoints." >&2
+                        "${aws_cli}" ec2 describe-instances --instance-ids "${EC2_INSTANCE_ID}" \
+                            --query 'Reservations[0].Instances[0].{State:State.Name,PublicIp:PublicIpAddress,Subnet:SubnetId,Vpc:VpcId,IamProfile:IamInstanceProfile.Arn}' \
+                            --output table >&2 || true
+                        exit 1
                         exit 1
                     '''
                 }

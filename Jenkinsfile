@@ -164,10 +164,17 @@ pipeline {
                                 chmod +x "${cli_tmp}/aws/install"
                                 "${cli_tmp}/aws/install" --install-dir "${WORKSPACE}/.tools/aws" \
                                     --bin-dir "${WORKSPACE}/.tools" --update
+                                chmod +x "${WORKSPACE}/.tools/aws"
                             fi
 
+                            if ! command -v aws >/dev/null 2>&1; then
+                                echo "AWS CLI installation did not provide an executable aws command" >&2
+                                exit 1
+                            fi
+                            chmod +x "$(command -v aws)"
                             export AWS_DEFAULT_REGION="${AWS_REGION}"
-                            if ! terraform state list | grep -qx 'aws_security_group.web_sg'; then
+                            state_resources="$(terraform state list 2>/dev/null || true)"
+                            if ! printf '%s\n' "${state_resources}" | grep -qx 'aws_security_group.web_sg'; then
                                 security_group_id="$(aws ec2 describe-security-groups \
                                     --filters 'Name=group-name,Values=prod-web-sg' \
                                     --query 'SecurityGroups[0].GroupId' \
@@ -179,7 +186,8 @@ pipeline {
                                 fi
                             fi
 
-                            if ! terraform state list | grep -qx 'aws_instance.web'; then
+                            state_resources="$(terraform state list 2>/dev/null || true)"
+                            if ! printf '%s\n' "${state_resources}" | grep -qx 'aws_instance.web'; then
                                 instance_id="$(aws ec2 describe-instances \
                                     --filters \
                                         'Name=tag:Name,Values=prod-web-server' \
@@ -213,10 +221,15 @@ pipeline {
                     ]) {
                         sh '''
                             set -eu
-                            echo "=== Terraform destroy started ==="
-                            terraform destroy -input=false -auto-approve -lock-timeout=5m \
-                                -var="aws_region=${AWS_REGION}" \
-                                -var="key_name=${AWS_KEY_NAME}"
+                            state_resources="$(terraform state list 2>/dev/null || true)"
+                            if [ -z "${state_resources}" ]; then
+                                echo "=== No Terraform-managed resources found; destroy skipped ==="
+                            else
+                                echo "=== Terraform destroy started ==="
+                                terraform destroy -input=false -auto-approve -lock-timeout=5m \
+                                    -var="aws_region=${AWS_REGION}" \
+                                    -var="key_name=${AWS_KEY_NAME}"
+                            fi
                             echo "=== Terraform destroy completed ==="
                         '''
                     }
@@ -240,7 +253,7 @@ pipeline {
                         sh '''
                             set -eu
                             export AWS_DEFAULT_REGION="${AWS_REGION}"
-                            remaining="$(terraform state list)"
+                            remaining="$(terraform state list 2>/dev/null || true)"
                             if [ -n "${remaining}" ]; then
                                 echo "Terraform state still contains managed resources after destroy:" >&2
                                 printf '%s\n' "${remaining}" >&2

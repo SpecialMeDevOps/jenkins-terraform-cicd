@@ -23,6 +23,17 @@ data "aws_ami" "ubuntu" {
   }
 }
 
+data "aws_vpc" "default" {
+  default = true
+}
+
+data "aws_subnets" "default_vpc" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
+  }
+}
+
 resource "aws_security_group" "web_sg" {
   name        = "${var.environment}-web-sg"
   description = "Allow HTTP; administration uses AWS Systems Manager"
@@ -45,6 +56,53 @@ resource "aws_security_group" "web_sg" {
     Name        = "${var.environment}-web-sg"
     Environment = var.environment
   }
+}
+
+resource "aws_security_group" "ssm_endpoints" {
+  name        = "${var.environment}-ssm-endpoints"
+  description = "Allow EC2 instances to reach AWS Systems Manager endpoints"
+  vpc_id      = data.aws_vpc.default.id
+
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = [data.aws_vpc.default.cidr_block]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_vpc_endpoint" "ssm" {
+  vpc_id              = data.aws_vpc.default.id
+  service_name        = "com.amazonaws.${var.aws_region}.ssm"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = data.aws_subnets.default_vpc.ids
+  security_group_ids  = [aws_security_group.ssm_endpoints.id]
+  private_dns_enabled = true
+}
+
+resource "aws_vpc_endpoint" "ssmmessages" {
+  vpc_id              = data.aws_vpc.default.id
+  service_name        = "com.amazonaws.${var.aws_region}.ssmmessages"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = data.aws_subnets.default_vpc.ids
+  security_group_ids  = [aws_security_group.ssm_endpoints.id]
+  private_dns_enabled = true
+}
+
+resource "aws_vpc_endpoint" "ec2messages" {
+  vpc_id              = data.aws_vpc.default.id
+  service_name        = "com.amazonaws.${var.aws_region}.ec2messages"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = data.aws_subnets.default_vpc.ids
+  security_group_ids  = [aws_security_group.ssm_endpoints.id]
+  private_dns_enabled = true
 }
 
 resource "aws_iam_role" "web_ssm" {
@@ -78,7 +136,12 @@ resource "aws_instance" "web" {
   iam_instance_profile        = aws_iam_instance_profile.web.name
   vpc_security_group_ids      = [aws_security_group.web_sg.id]
   associate_public_ip_address = true
-  depends_on                  = [aws_iam_role_policy_attachment.web_ssm]
+  depends_on = [
+    aws_iam_role_policy_attachment.web_ssm,
+    aws_vpc_endpoint.ssm,
+    aws_vpc_endpoint.ssmmessages,
+    aws_vpc_endpoint.ec2messages
+  ]
   user_data_replace_on_change = true
 
   user_data = <<-EOF

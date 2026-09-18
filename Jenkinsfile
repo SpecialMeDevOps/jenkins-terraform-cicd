@@ -516,7 +516,6 @@ pipeline {
                             --query 'Reservations[0].Instances[0].{State:State.Name,PublicIp:PublicIpAddress,Subnet:SubnetId,Vpc:VpcId,IamProfile:IamInstanceProfile.Arn}' \
                             --output table >&2 || true
                         exit 1
-                        exit 1
                     '''
                 }
             }

@@ -484,25 +484,11 @@ pipeline {
                         aws_cli="${WORKSPACE}/.tools/aws/v2/current/bin/aws"
                         if command -v aws >/dev/null 2>&1; then aws_cli="$(command -v aws)"; fi
                         test -x "${aws_cli}"
-                        if command -v python3 >/dev/null 2>&1; then
-                            python_bin=python3
-                        elif command -v python >/dev/null 2>&1; then
-                            python_bin=python
-                        else
-                            echo "Python is required to create the SSM command payload" >&2
-                            exit 1
-                        fi
                         export AWS_DEFAULT_REGION="${AWS_REGION}"
                         echo "=== Waiting for EC2 and SSM readiness ==="
                         for attempt in $(seq 1 18); do
-                            instance_state="$("${aws_cli}" ec2 describe-instances \
-                                --instance-ids "${EC2_INSTANCE_ID}" \
-                                --query 'Reservations[0].Instances[0].State.Name' \
-                                --output text)"
-                            ssm_status="$("${aws_cli}" ssm describe-instance-information \
-                                --filters "Key=InstanceIds,Values=${EC2_INSTANCE_ID}" \
-                                --query 'InstanceInformationList[0].PingStatus' \
-                                --output text 2>/dev/null || true)"
+                            instance_state="$("${aws_cli}" ec2 describe-instances --instance-ids "${EC2_INSTANCE_ID}" --query 'Reservations[0].Instances[0].State.Name' --output text)"
+                            ssm_status="$("${aws_cli}" ssm describe-instance-information --filters "Key=InstanceIds,Values=${EC2_INSTANCE_ID}" --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null || true)"
                             if [ "${instance_state}" = "running" ] && [ "${ssm_status}" = "Online" ]; then
                                 echo "EC2 ${EC2_INSTANCE_ID} is running and online in SSM"
                                 exit 0
@@ -510,11 +496,7 @@ pipeline {
                             echo "Waiting for EC2/SSM (attempt ${attempt}/18; state=${instance_state}; ssm=${ssm_status})"
                             sleep 10
                         done
-                        echo "EC2 instance did not register with SSM after 3 minutes." >&2
-                        echo "Verify the instance profile contains AmazonSSMManagedInstanceCore and that the subnet has HTTPS egress to SSM endpoints." >&2
-                        "${aws_cli}" ec2 describe-instances --instance-ids "${EC2_INSTANCE_ID}" \
-                            --query 'Reservations[0].Instances[0].{State:State.Name,PublicIp:PublicIpAddress,Subnet:SubnetId,Vpc:VpcId,IamProfile:IamInstanceProfile.Arn}' \
-                            --output table >&2 || true
+                        echo "EC2 instance did not register with SSM after 3 minutes" >&2
                         exit 1
                     '''
                 }
@@ -529,88 +511,61 @@ pipeline {
                 }
             }
             steps {
-                withCredentials([
-                    string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
-                    string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
-                ]) {
-                    sh '''
-                        set -eu
-                        aws_cli="${WORKSPACE}/.tools/aws/v2/current/bin/aws"
-                        if command -v aws >/dev/null 2>&1; then aws_cli="$(command -v aws)"; fi
-                        test -x "${aws_cli}"
-                        if command -v python3 >/dev/null 2>&1; then
-                            python_bin=python3
-                        elif command -v python >/dev/null 2>&1; then
-                            python_bin=python
-                        else
-                            echo "Python is required to create the SSM command payload" >&2
-                            exit 1
-                        fi
-                        export AWS_DEFAULT_REGION="${AWS_REGION}"
-                        echo "=== Deploying Docker application through SSM ==="
-                        command_file="$(mktemp)"
-                        trap 'rm -f "${command_file}"' EXIT
-                        "${python_bin}" - "${command_file}" "${DOCKER_IMAGE}" "${EC2_INSTANCE_ID}" <<'PY'
+                script {
+                    withCredentials([
+                        string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+                        string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+                    ]) {
+                        env.SSM_COMMAND_ID = sh(
+                            script: '''
+                                set -eu
+                                aws_cli="${WORKSPACE}/.tools/aws/v2/current/bin/aws"
+                                if command -v aws >/dev/null 2>&1; then aws_cli="$(command -v aws)"; fi
+                                test -x "${aws_cli}"
+                                if command -v python3 >/dev/null 2>&1; then python_bin=python3
+                                elif command -v python >/dev/null 2>&1; then python_bin=python
+                                else echo "Python is required to create the SSM parameters file" >&2; exit 1
+                                fi
+                                export AWS_DEFAULT_REGION="${AWS_REGION}"
+                                echo "=== Deploying Docker application through SSM ===" >&2
+                                params_file="/tmp/ssm-params.json"
+                                "${python_bin}" - "${params_file}" "${DOCKER_IMAGE}" <<'PY'
 import json
 import sys
-path, image, instance_id = sys.argv[1], sys.argv[2], sys.argv[3]
+path, image = sys.argv[1], sys.argv[2]
 script = """set -eu
 command -v docker
 systemctl enable --now docker
-for attempt in $(seq 1 12); do
-  if docker info >/dev/null 2>&1; then break; fi
-  if [ "${attempt}" -eq 12 ]; then echo "Docker is not ready" >&2; exit 1; fi
-  sleep 5
-done
 docker pull IMAGE
 docker stop web 2>/dev/null || true
 docker rm web 2>/dev/null || true
 docker run -d --name web -p 80:80 IMAGE
 docker ps --filter name=^/web$ --filter status=running --format '{{.Names}}' | grep -qx web
 """.replace("IMAGE", image)
-payload = {
-    "DocumentName": "AWS-RunShellScript",
-    "InstanceIds": [instance_id],
-    "Parameters": {"commands": [script]}
-}
 with open(path, "w", encoding="utf-8") as handle:
-    json.dump(payload, handle, separators=(",", ":"))
+    json.dump({"commands": [script]}, handle)
 PY
-                        command_id="$("${aws_cli}" ssm send-command \
-                            --cli-input-json "file://${command_file}" \
-                            --query 'Command.CommandId' --output text)"
-                        if [ -z "${command_id}" ] || [ "${command_id}" = "None" ]; then
-                            echo "AWS SSM did not return a command ID" >&2
-                            exit 1
-                        fi
-                        echo "SSM command submitted"
-                        for attempt in $(seq 1 30); do
-                            status="$("${aws_cli}" ssm get-command-invocation \
-                                --command-id "${command_id}" \
-                                --instance-id "${EC2_INSTANCE_ID}" \
-                                --query 'Status' --output text 2>/dev/null || true)"
-                            case "${status}" in
-                                Success)
-                                    echo "=== SSM Docker deployment completed ==="
-                                    exit 0
-                                    ;;
-                                Failed|Cancelled|TimedOut|Cancelling)
-                                    "${aws_cli}" ssm get-command-invocation --command-id "${command_id}" \
-                                        --instance-id "${EC2_INSTANCE_ID}" --query 'StandardErrorContent' --output text || true
-                                    echo "SSM deployment failed with status ${status}" >&2
-                                    exit 1
-                                    ;;
-                            esac
-                            sleep 10
-                        done
-                        echo "SSM deployment timed out" >&2
-                        exit 1
-                    '''
+                                command_id="$("${aws_cli}" ssm send-command \
+                                    --document-name "AWS-RunShellScript" \
+                                    --instance-ids "${EC2_INSTANCE_ID}" \
+                                    --parameters "file://${params_file}" \
+                                    --query 'Command.CommandId' --output text)"
+                                test -n "${command_id}"
+                                test "${command_id}" != "None"
+                                printf '%s\n' "${command_id}"
+                            ''',
+                            returnStdout: true
+                        ).trim()
+                        if (!(env.SSM_COMMAND_ID ==~ /^[a-f0-9-]+$/)) {
+                            error("AWS SSM returned an invalid command ID: ${env.SSM_COMMAND_ID}")
+                        }
+                        echo "SSM command submitted: ${env.SSM_COMMAND_ID}"
+                    }
                 }
             }
         }
 
-        stage('Verify deployment') {
+        stage('Verify SSM deployment') {
             when {
                 anyOf {
                     branch 'main'
@@ -618,22 +573,56 @@ PY
                 }
             }
             steps {
-                withCredentials([
-                    string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
-                    string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
-                ]) {
+                script {
+                    withCredentials([
+                        string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+                        string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+                    ]) {
                         sh """
                             set -eu
                             aws_cli="${WORKSPACE}/.tools/aws/v2/current/bin/aws"
                             if command -v aws >/dev/null 2>&1; then aws_cli="\$(command -v aws)"; fi
                             test -x "\${aws_cli}"
                             export AWS_DEFAULT_REGION="${AWS_REGION}"
-                            status="\$("\${aws_cli}" ssm describe-instance-information \
-                                --filters "Key=InstanceIds,Values=${EC2_INSTANCE_ID}" \
-                                --query 'InstanceInformationList[0].PingStatus' --output text)"
-                            test "\${status}" = "Online"
-                            echo "SSM reports the target instance online"
+                            test -n "${SSM_COMMAND_ID}"
+                            for attempt in \$(seq 1 30); do
+                                status="\$("\${aws_cli}" ssm get-command-invocation \
+                                    --command-id "${SSM_COMMAND_ID}" \
+                                    --instance-id "${EC2_INSTANCE_ID}" \
+                                    --query 'Status' --output text 2>/dev/null || true)"
+                                case "\${status}" in
+                                    Success|Failed|Cancelled|TimedOut|Cancelling)
+                                        break
+                                        ;;
+                                    *)
+                                        echo "Waiting for SSM command ${SSM_COMMAND_ID} (attempt \${attempt}/30; status=\${status})"
+                                        sleep 10
+                                        ;;
+                                esac
+                            done
+                            stdout="\$("\${aws_cli}" ssm get-command-invocation \
+                                --command-id "${SSM_COMMAND_ID}" \
+                                --instance-id "${EC2_INSTANCE_ID}" \
+                                --query 'StandardOutputContent' --output text)"
+                            stderr="\$("\${aws_cli}" ssm get-command-invocation \
+                                --command-id "${SSM_COMMAND_ID}" \
+                                --instance-id "${EC2_INSTANCE_ID}" \
+                                --query 'StandardErrorContent' --output text)"
+                            echo "=== SSM stdout ==="
+                            printf '%s\n' "\${stdout}"
+                            echo "=== SSM stderr ==="
+                            printf '%s\n' "\${stderr}" >&2
+                            case "\${status}" in
+                                Success)
+                                    echo "=== SSM Docker deployment completed ==="
+                                    ;;
+                                *)
+                                    echo "SSM Docker deployment failed with status \${status}" >&2
+                                    exit 1
+                                    ;;
+                            esac
                         """
+                    }
                 }
             }
         }

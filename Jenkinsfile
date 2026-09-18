@@ -171,10 +171,11 @@ pipeline {
                                 security_group_id="$(aws ec2 describe-security-groups \
                                     --filters 'Name=group-name,Values=prod-web-sg' \
                                     --query 'SecurityGroups[0].GroupId' \
-                                    --output text 2>/dev/null || true)"
+                                    --output text)"
                                 if [ -n "${security_group_id}" ] && [ "${security_group_id}" != "None" ]; then
                                     echo "Importing existing project security group ${security_group_id} into Terraform state"
                                     terraform import -no-color aws_security_group.web_sg "${security_group_id}"
+                                    terraform state list | grep -qx 'aws_security_group.web_sg'
                                 fi
                             fi
 
@@ -184,10 +185,11 @@ pipeline {
                                         'Name=tag:Name,Values=prod-web-server' \
                                         'Name=instance-state-name,Values=pending,running,stopping,stopped' \
                                     --query 'Reservations[0].Instances[0].InstanceId' \
-                                    --output text 2>/dev/null || true)"
+                                    --output text)"
                                 if [ -n "${instance_id}" ] && [ "${instance_id}" != "None" ]; then
                                     echo "Importing existing project instance ${instance_id} into Terraform state"
                                     terraform import -no-color aws_instance.web "${instance_id}"
+                                    terraform state list | grep -qx 'aws_instance.web'
                                 fi
                             fi
                         '''
@@ -237,10 +239,19 @@ pipeline {
                     ]) {
                         sh '''
                             set -eu
+                            export AWS_DEFAULT_REGION="${AWS_REGION}"
                             remaining="$(terraform state list)"
                             if [ -n "${remaining}" ]; then
                                 echo "Terraform state still contains managed resources after destroy:" >&2
                                 printf '%s\n' "${remaining}" >&2
+                                exit 1
+                            fi
+                            security_group_id="$(aws ec2 describe-security-groups \
+                                --filters 'Name=group-name,Values=prod-web-sg' \
+                                --query 'SecurityGroups[0].GroupId' \
+                                --output text)"
+                            if [ -n "${security_group_id}" ] && [ "${security_group_id}" != "None" ]; then
+                                echo "Security group prod-web-sg still exists after destroy: ${security_group_id}" >&2
                                 exit 1
                             fi
                             echo "=== Terraform destroy verification completed ==="

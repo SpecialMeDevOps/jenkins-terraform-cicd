@@ -82,8 +82,10 @@ resource "aws_instance" "web" {
   user_data = <<-EOF
               #!/bin/bash
               set -eux
+              exec > >(tee -a /var/log/jenkins-terraform-bootstrap.log | logger -t jenkins-terraform-bootstrap -s 2>/dev/console) 2>&1
+              export DEBIAN_FRONTEND=noninteractive
               apt-get update -y
-              apt-get install -y docker.io snapd
+              apt-get install -y docker.io curl snapd
               systemctl enable --now docker
               systemctl enable --now snapd.socket || true
               for attempt in $(seq 1 12); do
@@ -93,7 +95,16 @@ resource "aws_instance" "web" {
                 snap install amazon-ssm-agent --classic && break || true
                 sleep 5
               done
-              systemctl enable --now snap.amazon-ssm-agent.amazon-ssm-agent
+              if snap list amazon-ssm-agent >/dev/null 2>&1; then
+                systemctl enable --now snap.amazon-ssm-agent.amazon-ssm-agent
+              else
+                curl --fail --silent --show-error --location --retry 5 \
+                  --output /tmp/amazon-ssm-agent.deb \
+                  "https://s3.${var.aws_region}.amazonaws.com/amazon-ssm-${var.aws_region}/latest/debian_amd64/amazon-ssm-agent.deb"
+                dpkg -i /tmp/amazon-ssm-agent.deb
+                systemctl enable --now amazon-ssm-agent
+              fi
+              systemctl is-active --quiet docker
               EOF
 
   tags = {

@@ -1,60 +1,88 @@
-# jenkins-terraform-cicd.......
+# Jenkins + Terraform + AWS SSM deployment
 
+This project provisions an Ubuntu EC2 web server with Terraform, builds and
+pushes the Docker image to Docker Hub, and deploys it through AWS Systems
+Manager (SSM). The pipeline does not use SSH, port 22, a `.pem` file, or an
+SSH credential.
 
+## Required Jenkins credentials
 
+The pipeline currently obtains AWS credentials from Jenkins credentials with
+these IDs:
 
-Jenkins + GitHub Webhook integration, Jenkins credentials, Terraform AWS
-infrastructure, and a complete CI/CD pipeline.
+- `aws-access-key-id`: AWS access key ID
+- `aws-secret-access-key`: AWS secret access key
+- `dockerhub-creds`: Docker Hub username and a read/write access token
 
-The pipeline bootstraps Terraform `1.16.3` into the workspace when the Jenkins
-agent does not already provide Terraform. The agent must have outbound HTTPS access to `releases.hashicorp.com` and
-provide `curl` plus either `unzip` or Python.
+For production, prefer assigning the Jenkins agent an AWS IAM instance profile
+or configuring Jenkins OIDC/web-identity federation. In that case, remove the
+two AWS `withCredentials` bindings from the Jenkinsfile and let the AWS CLI and
+Terraform use the agent role. Never put AWS keys in the Jenkinsfile, Terraform
+files, Git, or build parameters.
 
-Before running a production build, create an EC2 key pair named
-`jenkins-project` in the AWS region selected by the Jenkins `AWS_REGION` build
-parameter, or enter an existing key pair name in that parameter. The key pair
-must already exist;
-Terraform cannot create an EC2 key pair without importing its public key.
+## AWS permissions
 
-The AWS key-pair ID (`key-078456c5751d09866`) is not an SSH credential. Add the
-private `.pem` file downloaded when `jenkins-project` was created to Jenkins as
-an **SSH Username with private key** credential. The default Jenkins credential
-ID is `prod-server-ssh`; if you use another ID, set the `SSH_CREDENTIAL_ID`
-build parameter to that ID. Use username `ubuntu`. AWS does not allow the private key to be downloaded again;
-if the original `.pem` file is unavailable, create a new key pair and update
-`AWS_KEY_NAME` before deploying.
+The Jenkins AWS identity needs the Terraform permissions for the resources in
+this project, plus these SSM deployment permissions:
 
-Terraform state is kept in the Jenkins workspace because this installation
-does not have an S3 state bucket configured. Concurrent builds are disabled and
-the workspace is preserved so the next build can use the same state. The
-pipeline destroys only resources recorded in that Terraform state, verifies
-that the state is empty, and then plans and applies the fresh infrastructure.
+- `ssm:DescribeInstanceInformation`
+- `ssm:SendCommand`
+- `ssm:GetCommandInvocation`
+- `ec2:DescribeInstances`
+- `ec2:DescribeSecurityGroups`
+- `iam:GetRole`
+- `iam:GetInstanceProfile`
+- `iam:ListAttachedRolePolicies`
 
-The security group has a stable name (`prod-web-sg`). Do not add build numbers
-to Terraform resource names, because changing names on every build creates
-duplicates instead of allowing Terraform to manage one predictable resource.
+The Terraform identity also needs to create and destroy the EC2, security
+group, IAM role, IAM policy attachment, and IAM instance profile resources.
+Use a least-privilege policy scoped to the project resources in production.
 
-Before destroy, the production pipeline bootstraps the AWS CLI when needed and
-imports only the existing project security group named `prod-web-sg` and the
-project instance tagged `prod-web-server` into Terraform state. It does not
-scan or import unrelated resources. The subsequent Terraform destroy then
-removes those imported project resources normally.
+## Terraform and networking
 
-The pipeline pushes to `malikzohaib1482/workdocker-222`. Keep the Jenkins
-`DOCKERHUB_NAMESPACE` parameter set to `malikzohaib1482`. Do not use the login email address;
-Docker image namespaces cannot contain `@`.
+The EC2 instance receives the AWS-managed
+`AmazonSSMManagedInstanceCore` policy through an IAM role and instance profile.
+Cloud-init installs Docker, installs the Ubuntu SSM Agent through snap, enables
+both services, and waits for the agent to start.
 
-Configure `dockerhub-creds` as a username/password credential where the
-username is the Docker Hub username (or email) and the password is a Docker
-Hub access token with `Read & Write` permission for the `workdocker-222`
-repository. The repository must exist under that namespace.
+The security group allows HTTP on port 80 and unrestricted outbound traffic so
+the instance can reach the regional SSM endpoints through its existing public
+network path. Port 22 is not opened. For a private-subnet production design,
+replace the public path with VPC interface endpoints for `ssm`, `ssmmessages`,
+and `ec2messages`, plus the required private subnet routing and endpoint
+security group.
 
-The EC2 AMI is selected dynamically from the latest available official
-Canonical Ubuntu 22.04 x86_64 HVM image in the configured AWS region, so the
-deployment is not tied to a region-specific AMI ID.
+Terraform outputs `instance_id`, `instance_public_ip`, and `application_url`.
+The Jenkins pipeline always obtains the current instance ID from
+`terraform output -raw instance_id`, so an EC2 replacement does not leave a
+stale IP or SSH key reference.
 
-For multiple Jenkins agents or high-availability production use, configure a
-real shared S3 backend later. Resources created by older local-state builds
-must be imported into this workspace state once, or removed through a reviewed
-one-time migration; the pipeline never scans or deletes unrelated AWS
-resources.
+## Pipeline flow
+
+```text
+GitHub Push
+  -> Checkout and validation
+  -> Terraform init
+  -> Reconcile known project resources
+  -> Terraform destroy and verification
+  -> Terraform plan and approval
+  -> Terraform apply
+  -> Get current EC2 instance ID
+  -> Wait for EC2 and SSM Online
+  -> Send Docker deployment through SSM
+  -> Verify SSM target
+  -> Smoke test the application URL
+```
+
+The SSM command verifies Docker, pulls
+`malikzohaib1482/workdocker-222:<build-number>`, replaces the `web` container,
+and verifies that the new container is running. Failed SSM commands fail the
+Jenkins build.
+
+## Jenkins parameters
+
+- `AWS_REGION`: AWS region, default `ap-south-1`
+- `DOCKERHUB_NAMESPACE`: default `malikzohaib1482`
+
+There is no AWS key-pair parameter and no SSH credential parameter. Terraform
+does not store a private SSH key or require one to create the instance.

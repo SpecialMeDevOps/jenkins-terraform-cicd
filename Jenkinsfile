@@ -17,19 +17,9 @@ pipeline {
             description: 'AWS region for the deployment'
         )
         string(
-            name: 'AWS_KEY_NAME',
-            defaultValue: 'jenkins-project',
-            description: 'Existing EC2 key pair name in the selected AWS region'
-        )
-        string(
             name: 'DOCKERHUB_NAMESPACE',
             defaultValue: 'malikzohaib1482',
             description: 'Docker Hub username/namespace that owns workdocker-222'
-        )
-        string(
-            name: 'SSH_CREDENTIAL_ID',
-            defaultValue: 'prod-server-ssh',
-            description: 'Jenkins SSH Username with private key credential ID for the EC2 server'
         )
     }
 
@@ -195,6 +185,33 @@ pipeline {
                             fi
 
                             state_resources="$(terraform state list 2>/dev/null || true)"
+                            if ! printf '%s\n' "${state_resources}" | grep -qx 'aws_iam_role.web_ssm'; then
+                                if "${aws_cli}" iam get-role --role-name "prod-web-ssm-role" >/dev/null 2>&1; then
+                                    echo "Importing existing project SSM role"
+                                    terraform import -no-color aws_iam_role.web_ssm "prod-web-ssm-role"
+                                fi
+                            fi
+
+                            state_resources="$(terraform state list 2>/dev/null || true)"
+                            if ! printf '%s\n' "${state_resources}" | grep -qx 'aws_iam_instance_profile.web'; then
+                                if "${aws_cli}" iam get-instance-profile --instance-profile-name "prod-web-instance-profile" >/dev/null 2>&1; then
+                                    echo "Importing existing project SSM instance profile"
+                                    terraform import -no-color aws_iam_instance_profile.web "prod-web-instance-profile"
+                                fi
+                            fi
+
+                            state_resources="$(terraform state list 2>/dev/null || true)"
+                            if ! printf '%s\n' "${state_resources}" | grep -qx 'aws_iam_role_policy_attachment.web_ssm'; then
+                                role_policy_id="prod-web-ssm-role/arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+                                if "${aws_cli}" iam list-attached-role-policies --role-name "prod-web-ssm-role" \
+                                    --query "AttachedPolicies[?PolicyArn=='arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'].PolicyArn" \
+                                    --output text | grep -qx 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'; then
+                                    echo "Importing existing SSM managed policy attachment"
+                                    terraform import -no-color aws_iam_role_policy_attachment.web_ssm "${role_policy_id}"
+                                fi
+                            fi
+
+                            state_resources="$(terraform state list 2>/dev/null || true)"
                             if ! printf '%s\n' "${state_resources}" | grep -qx 'aws_instance.web'; then
                                 instance_id="$("${aws_cli}" ec2 describe-instances \
                                     --filters \
@@ -235,8 +252,7 @@ pipeline {
                             else
                                 echo "=== Terraform destroy started ==="
                                 terraform destroy -input=false -auto-approve -lock-timeout=5m \
-                                    -var="aws_region=${AWS_REGION}" \
-                                    -var="key_name=${AWS_KEY_NAME}"
+                                    -var="aws_region=${AWS_REGION}"
                             fi
                             echo "=== Terraform destroy completed ==="
                         '''
@@ -282,6 +298,24 @@ pipeline {
                                 echo "Security group prod-web-sg still exists after destroy: ${security_group_id}" >&2
                                 exit 1
                             fi
+                            if "${aws_cli}" iam get-role --role-name "prod-web-ssm-role" >/dev/null 2>&1; then
+                                echo "SSM IAM role prod-web-ssm-role still exists after destroy" >&2
+                                exit 1
+                            fi
+                            if "${aws_cli}" iam get-instance-profile --instance-profile-name "prod-web-instance-profile" >/dev/null 2>&1; then
+                                echo "SSM instance profile prod-web-instance-profile still exists after destroy" >&2
+                                exit 1
+                            fi
+                            instance_id="$("${aws_cli}" ec2 describe-instances \
+                                --filters \
+                                    'Name=tag:Name,Values=prod-web-server' \
+                                    'Name=instance-state-name,Values=pending,running,stopping,stopped' \
+                                --query 'Reservations[0].Instances[0].InstanceId' \
+                                --output text)"
+                            if [ -n "${instance_id}" ] && [ "${instance_id}" != "None" ]; then
+                                echo "Project instance ${instance_id} still exists after destroy" >&2
+                                exit 1
+                            fi
                             echo "=== Terraform destroy verification completed ==="
                         '''
                     }
@@ -307,7 +341,6 @@ pipeline {
                             echo "=== Terraform plan ==="
                             terraform plan -input=false -lock-timeout=5m \
                                 -var="aws_region=${AWS_REGION}" \
-                                -var="key_name=${AWS_KEY_NAME}" \
                                 -out=tfplan
                         '''
                     }
@@ -413,7 +446,7 @@ pipeline {
             }
         }
 
-        stage('Deploy to Server') {
+        stage('Get EC2 Instance ID') {
             when {
                 anyOf {
                     branch 'main'
@@ -422,58 +455,164 @@ pipeline {
             }
             steps {
                 script {
-                    def tfOutput = sh(
-                        script: "cd ${TF_WORKING_DIR} && terraform output -raw instance_public_ip",
+                    env.EC2_INSTANCE_ID = sh(
+                        script: "cd ${TF_WORKING_DIR} && terraform output -raw instance_id",
                         returnStdout: true
                     ).trim()
-                    def sshCredentialId = params.SSH_CREDENTIAL_ID?.trim()
-                    if (!sshCredentialId) {
-                        error('SSH_CREDENTIAL_ID is required. Create an SSH Username with private key credential in Jenkins.')
+                    if (!(env.EC2_INSTANCE_ID ==~ /^i-[0-9a-f]+$/)) {
+                        error("Terraform returned an invalid EC2 instance ID: ${env.EC2_INSTANCE_ID}")
                     }
+                    echo "Target EC2 instance: ${env.EC2_INSTANCE_ID}"
+                }
+            }
+        }
 
-                    echo "Deploying to ${tfOutput}"
+        stage('Wait for SSM') {
+            when {
+                anyOf {
+                    branch 'main'
+                    expression { env.GIT_BRANCH == 'origin/main' }
+                }
+            }
+            steps {
+                withCredentials([
+                    string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+                ]) {
+                    sh '''
+                        set -eu
+                        aws_cli="${WORKSPACE}/.tools/aws/v2/current/bin/aws"
+                        if command -v aws >/dev/null 2>&1; then aws_cli="$(command -v aws)"; fi
+                        test -x "${aws_cli}"
+                        if command -v python3 >/dev/null 2>&1; then
+                            python_bin=python3
+                        elif command -v python >/dev/null 2>&1; then
+                            python_bin=python
+                        else
+                            echo "Python is required to create the SSM command payload" >&2
+                            exit 1
+                        fi
+                        export AWS_DEFAULT_REGION="${AWS_REGION}"
+                        echo "=== Waiting for EC2 and SSM readiness ==="
+                        for attempt in $(seq 1 30); do
+                            instance_state="$("${aws_cli}" ec2 describe-instances \
+                                --instance-ids "${EC2_INSTANCE_ID}" \
+                                --query 'Reservations[0].Instances[0].State.Name' \
+                                --output text)"
+                            ssm_status="$("${aws_cli}" ssm describe-instance-information \
+                                --filters "Key=InstanceIds,Values=${EC2_INSTANCE_ID}" \
+                                --query 'InstanceInformationList[0].PingStatus' \
+                                --output text 2>/dev/null || true)"
+                            if [ "${instance_state}" = "running" ] && [ "${ssm_status}" = "Online" ]; then
+                                echo "EC2 ${EC2_INSTANCE_ID} is running and online in SSM"
+                                exit 0
+                            fi
+                            echo "Waiting for EC2/SSM (attempt ${attempt}/30; state=${instance_state}; ssm=${ssm_status})"
+                            sleep 10
+                        done
+                        echo "EC2 instance did not become available through SSM" >&2
+                        exit 1
+                    '''
+                }
+            }
+        }
 
-                    withCredentials([
-                        sshUserPrivateKey(
-                            credentialsId: sshCredentialId,
-                            keyFileVariable: 'SSH_KEY_FILE',
-                            usernameVariable: 'SSH_USERNAME'
-                        )
-                    ]) {
-                        sh """
-                            set -eu
-                            case '${tfOutput}' in
-                                ''|*[!0-9.]*)
-                                    echo "Terraform returned an invalid instance IP: ${tfOutput}" >&2
+        stage('Deploy with SSM') {
+            when {
+                anyOf {
+                    branch 'main'
+                    expression { env.GIT_BRANCH == 'origin/main' }
+                }
+            }
+            steps {
+                withCredentials([
+                    string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+                ]) {
+                    sh '''
+                        set -eu
+                        aws_cli="${WORKSPACE}/.tools/aws/v2/current/bin/aws"
+                        if command -v aws >/dev/null 2>&1; then aws_cli="$(command -v aws)"; fi
+                        test -x "${aws_cli}"
+                        export AWS_DEFAULT_REGION="${AWS_REGION}"
+                        echo "=== Deploying Docker application through SSM ==="
+                        command_file="$(mktemp)"
+                        trap 'rm -f "${command_file}"' EXIT
+                        "${python_bin}" - "${command_file}" "${DOCKER_IMAGE}" <<'PY'
+import json
+import sys
+path, image = sys.argv[1], sys.argv[2]
+script = """set -eu
+command -v docker
+systemctl enable --now docker
+for attempt in $(seq 1 12); do
+  if docker info >/dev/null 2>&1; then break; fi
+  if [ "${attempt}" -eq 12 ]; then echo "Docker is not ready" >&2; exit 1; fi
+  sleep 5
+done
+docker pull IMAGE
+docker stop web 2>/dev/null || true
+docker rm web 2>/dev/null || true
+docker run -d --name web -p 80:80 IMAGE
+docker ps --filter name=^/web$ --filter status=running --format '{{.Names}}' | grep -qx web
+""".replace("IMAGE", image)
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump({"DocumentName": "AWS-RunShellScript", "InstanceIds": [__import__("os").environ["EC2_INSTANCE_ID"],], "Parameters": {"commands": script.splitlines()}}, handle)
+PY
+                        command_id="$("${aws_cli}" ssm send-command \
+                            --cli-input-json "file://${command_file}" \
+                            --query 'Command.CommandId' --output text)"
+                        echo "SSM command submitted"
+                        for attempt in $(seq 1 30); do
+                            status="$("${aws_cli}" ssm get-command-invocation \
+                                --command-id "${command_id}" \
+                                --instance-id "${EC2_INSTANCE_ID}" \
+                                --query 'Status' --output text 2>/dev/null || true)"
+                            case "${status}" in
+                                Success)
+                                    echo "=== SSM Docker deployment completed ==="
+                                    exit 0
+                                    ;;
+                                Failed|Cancelled|TimedOut|Cancelling)
+                                    "${aws_cli}" ssm get-command-invocation --command-id "${command_id}" \
+                                        --instance-id "${EC2_INSTANCE_ID}" --query 'StandardErrorContent' --output text || true
+                                    echo "SSM deployment failed with status ${status}" >&2
                                     exit 1
                                     ;;
                             esac
-                            chmod 600 "\${SSH_KEY_FILE}"
-                            ssh -n -i "\${SSH_KEY_FILE}" \
-                                -o BatchMode=yes \
-                                -o StrictHostKeyChecking=no \
-                                -o ConnectTimeout=15 \
-                                -o ConnectionAttempts=3 \
-                                -o ServerAliveInterval=10 \
-                                -o ServerAliveCountMax=3 \
-                                "\${SSH_USERNAME}@${tfOutput}" '
-                                    for attempt in \$(seq 1 12); do
-                                        if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-                                            break
-                                        fi
-                                        if [ "\${attempt}" -eq 12 ]; then
-                                            echo "Docker is not ready on the server" >&2
-                                            exit 1
-                                        fi
-                                        sleep 5
-                                    done
-                                    docker pull ${env.DOCKER_IMAGE}
-                                    docker stop web || true
-                                    docker rm web || true
-                                    docker run -d --name web -p 80:80 ${env.DOCKER_IMAGE}
-                                '
+                            sleep 10
+                        done
+                        echo "SSM deployment timed out" >&2
+                        exit 1
+                    '''
+                }
+            }
+        }
+
+        stage('Verify deployment') {
+            when {
+                anyOf {
+                    branch 'main'
+                    expression { env.GIT_BRANCH == 'origin/main' }
+                }
+            }
+            steps {
+                withCredentials([
+                    string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+                ]) {
+                        sh """
+                            set -eu
+                            aws_cli="${WORKSPACE}/.tools/aws/v2/current/bin/aws"
+                            if command -v aws >/dev/null 2>&1; then aws_cli="\$(command -v aws)"; fi
+                            test -x "\${aws_cli}"
+                            export AWS_DEFAULT_REGION="${AWS_REGION}"
+                            status="\$("\${aws_cli}" ssm describe-instance-information \
+                                --filters "Key=InstanceIds,Values=${EC2_INSTANCE_ID}" \
+                                --query 'InstanceInformationList[0].PingStatus' --output text)"
+                            test "\${status}" = "Online"
+                            echo "SSM reports the target instance online"
                         """
-                    }
                 }
             }
         }
@@ -491,7 +630,18 @@ pipeline {
                         script: "cd ${TF_WORKING_DIR} && terraform output -raw instance_public_ip",
                         returnStdout: true
                     ).trim()
-                    sh "sleep 10 && curl -f http://${ip} || exit 1"
+                    sh """
+                        set -eu
+                        for attempt in \$(seq 1 12); do
+                            if curl --fail --silent --show-error --connect-timeout 5 http://${ip}; then
+                                exit 0
+                            fi
+                            echo "Waiting for application HTTP endpoint (attempt \${attempt}/12)"
+                            sleep 5
+                        done
+                        echo "Application smoke test failed" >&2
+                        exit 1
+                    """
                 }
             }
         }

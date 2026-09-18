@@ -1,8 +1,3 @@
-data "aws_key_pair" "deployment" {
-  key_name           = var.key_name
-  include_public_key = true
-}
-
 data "aws_ami" "ubuntu" {
   most_recent = true
   owners      = ["099720109477"]
@@ -28,21 +23,13 @@ data "aws_ami" "ubuntu" {
   }
 }
 
-# Security Group
 resource "aws_security_group" "web_sg" {
   name        = "${var.environment}-web-sg"
-  description = "Allow HTTP and SSH"
+  description = "Allow HTTP; administration uses AWS Systems Manager"
 
   ingress {
     from_port   = 80
     to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    from_port   = 22
-    to_port     = 22
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
@@ -60,19 +47,53 @@ resource "aws_security_group" "web_sg" {
   }
 }
 
-# EC2 Instance
+resource "aws_iam_role" "web_ssm" {
+  name = "${var.environment}-web-ssm-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Service = "ec2.amazonaws.com"
+      }
+      Action = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "web_ssm" {
+  role       = aws_iam_role.web_ssm.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_instance_profile" "web" {
+  name = "${var.environment}-web-instance-profile"
+  role = aws_iam_role.web_ssm.name
+}
+
 resource "aws_instance" "web" {
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = var.instance_type
-  key_name               = var.key_name
+  iam_instance_profile   = aws_iam_instance_profile.web.name
   vpc_security_group_ids = [aws_security_group.web_sg.id]
+  depends_on             = [aws_iam_role_policy_attachment.web_ssm]
 
   user_data = <<-EOF
               #!/bin/bash
+              set -eux
               apt-get update -y
-              apt-get install -y docker.io
-              systemctl start docker
-              systemctl enable docker
+              apt-get install -y docker.io snapd
+              systemctl enable --now docker
+              systemctl enable --now snapd.socket || true
+              for attempt in $(seq 1 12); do
+                if snap list amazon-ssm-agent >/dev/null 2>&1; then
+                  break
+                fi
+                snap install amazon-ssm-agent --classic && break || true
+                sleep 5
+              done
+              systemctl enable --now snap.amazon-ssm-agent.amazon-ssm-agent
               EOF
 
   tags = {

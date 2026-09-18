@@ -548,12 +548,10 @@ pipeline {
                         fi
                         export AWS_DEFAULT_REGION="${AWS_REGION}"
                         echo "=== Deploying Docker application through SSM ==="
-                        command_file="$(mktemp)"
-                        trap 'rm -f "${command_file}"' EXIT
-                        "${python_bin}" - "${command_file}" "${DOCKER_IMAGE}" <<'PY'
+                        parameters_json="$("${python_bin}" - "${DOCKER_IMAGE}" "${EC2_INSTANCE_ID}" <<'PY'
 import json
 import sys
-path, image = sys.argv[1], sys.argv[2]
+image = sys.argv[1]
 script = """set -eu
 command -v docker
 systemctl enable --now docker
@@ -568,12 +566,18 @@ docker rm web 2>/dev/null || true
 docker run -d --name web -p 80:80 IMAGE
 docker ps --filter name=^/web$ --filter status=running --format '{{.Names}}' | grep -qx web
 """.replace("IMAGE", image)
-with open(path, "w", encoding="utf-8") as handle:
-    json.dump({"DocumentName": "AWS-RunShellScript", "InstanceIds": [__import__("os").environ["EC2_INSTANCE_ID"],], "Parameters": {"commands": script.splitlines()}}, handle)
+print(json.dumps({"commands": [script]}))
 PY
+                        )"
                         command_id="$("${aws_cli}" ssm send-command \
-                            --cli-input-json "file://${command_file}" \
+                            --document-name "AWS-RunShellScript" \
+                            --instance-ids "${EC2_INSTANCE_ID}" \
+                            --parameters "${parameters_json}" \
                             --query 'Command.CommandId' --output text)"
+                        if [ -z "${command_id}" ] || [ "${command_id}" = "None" ]; then
+                            echo "AWS SSM did not return a command ID" >&2
+                            exit 1
+                        fi
                         echo "SSM command submitted"
                         for attempt in $(seq 1 30); do
                             status="$("${aws_cli}" ssm get-command-invocation \

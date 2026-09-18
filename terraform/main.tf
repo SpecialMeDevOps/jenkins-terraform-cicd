@@ -73,11 +73,12 @@ resource "aws_iam_instance_profile" "web" {
 }
 
 resource "aws_instance" "web" {
-  ami                    = data.aws_ami.ubuntu.id
-  instance_type          = var.instance_type
-  iam_instance_profile   = aws_iam_instance_profile.web.name
-  vpc_security_group_ids = [aws_security_group.web_sg.id]
-  depends_on             = [aws_iam_role_policy_attachment.web_ssm]
+  ami                         = data.aws_ami.ubuntu.id
+  instance_type               = var.instance_type
+  iam_instance_profile        = aws_iam_instance_profile.web.name
+  vpc_security_group_ids      = [aws_security_group.web_sg.id]
+  associate_public_ip_address = true
+  depends_on                  = [aws_iam_role_policy_attachment.web_ssm]
 
   user_data = <<-EOF
               #!/bin/bash
@@ -85,25 +86,23 @@ resource "aws_instance" "web" {
               exec > >(tee -a /var/log/jenkins-terraform-bootstrap.log | logger -t jenkins-terraform-bootstrap -s 2>/dev/console) 2>&1
               export DEBIAN_FRONTEND=noninteractive
               apt-get update -y
-              apt-get install -y docker.io curl snapd
+              apt-get install -y docker.io curl
               systemctl enable --now docker
-              systemctl enable --now snapd.socket || true
+              curl --fail --silent --show-error --location --retry 8 \
+                --output /tmp/amazon-ssm-agent.deb \
+                "https://s3.${var.aws_region}.amazonaws.com/amazon-ssm-${var.aws_region}/latest/debian_amd64/amazon-ssm-agent.deb"
+              dpkg -i /tmp/amazon-ssm-agent.deb
+              systemctl daemon-reload
+              systemctl enable amazon-ssm-agent
+              systemctl restart amazon-ssm-agent
               for attempt in $(seq 1 12); do
-                if snap list amazon-ssm-agent >/dev/null 2>&1; then
+                if systemctl is-active --quiet amazon-ssm-agent; then
                   break
                 fi
-                snap install amazon-ssm-agent --classic && break || true
+                systemctl restart amazon-ssm-agent || true
                 sleep 5
               done
-              if snap list amazon-ssm-agent >/dev/null 2>&1; then
-                systemctl enable --now snap.amazon-ssm-agent.amazon-ssm-agent
-              else
-                curl --fail --silent --show-error --location --retry 5 \
-                  --output /tmp/amazon-ssm-agent.deb \
-                  "https://s3.${var.aws_region}.amazonaws.com/amazon-ssm-${var.aws_region}/latest/debian_amd64/amazon-ssm-agent.deb"
-                dpkg -i /tmp/amazon-ssm-agent.deb
-                systemctl enable --now amazon-ssm-agent
-              fi
+              systemctl is-active --quiet amazon-ssm-agent
               systemctl is-active --quiet docker
               EOF
 
